@@ -20,10 +20,6 @@ class BrownianAntipodalPaths(Dataset):
         self.action = None
 
     def __getitem__(self, idx):
-        self.size -= 1
-        if self.size < 0:
-            raise StopIteration
-
         if not self.path:
             self.cube.algo([int(i) for i in list(torch.randperm(len(Cube.actions), generator=self.gen, dtype=torch.uint8))][:self.wander])
             self.path = Cube.orbits[int(torch.randint(len(Cube.orbits), (1,1), generator=self.gen, dtype=torch.int16))]
@@ -33,13 +29,13 @@ class BrownianAntipodalPaths(Dataset):
             self.cube.setState(self.start)
 
         try:
-            return [item for sublist in next(self.perms) for item in sublist], self.action
+            return torch.tensor([item for sublist in next(self.perms) for item in sublist], dtype=torch.float), torch.tensor(self.action, dtype=torch.float)
         except StopIteration:
             self.action = self.path[0]
             self.path = self.path[1:]
             self.perms = RandomColorPermutor(self.gen, [self.start, self.cube.getState(), self.finish], self.colors)
             self.cube.act(self.action)
-            return [item for sublist in next(self.perms) for item in sublist], self.action
+            return torch.tensor([item for sublist in next(self.perms) for item in sublist], dtype=torch.float), torch.tensor(self.action, dtype=torch.float)
 
     def __len__(self):
         return self.size
@@ -64,6 +60,4 @@ class RandomColorPermutor():
         return self
 
 if __name__ == "__main__":
-    ds = BrownianAntipodalPaths(1, 0, 1)
-    for d in ds:
-        print(d)
+    print(next(iter(BrownianAntipodalPaths(1, 0, 1))))
