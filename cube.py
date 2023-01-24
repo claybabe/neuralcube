@@ -1323,13 +1323,16 @@ class Cube():
     def algo(self, actions):
         for action in actions:
             self.act(action)
-    
+
     def getState(self):
         return tuple(self.state)
 
+    def setState(self, state):
+        self.state = state
+
     def isSolved(self):
         return tuple(self.state) == Cube.solved
-    
+
     def __repr__(self):
         return repr(self.state)
 
