@@ -1,7 +1,6 @@
 # 2023 - copyright - all rights reserved - clayton thomas baber
 
-import torch
-from torch import Generator
+from torch import Generator, tensor, randperm, randint, uint8, int16
 from torch.utils.data import Dataset, DataLoader
 from pytorch_lightning import LightningDataModule
 from torch.nn.functional import one_hot
@@ -44,21 +43,21 @@ class BrownianAntipodalPaths(Dataset):
 
     def __getitem__(self, idx):
         if not self.path:
-            self.cube.algo([int(i) for i in list(torch.randperm(len(Cube.actions), generator=self.gen, dtype=torch.uint8))][:self.wander])
-            self.path = Cube.orbits[int(torch.randint(len(Cube.orbits), (1,1), generator=self.gen, dtype=torch.int16))]
+            self.cube.algo([int(i) for i in list(randperm(len(Cube.actions), generator=self.gen, dtype=uint8))][:self.wander])
+            self.path = Cube.orbits[int(randint(len(Cube.orbits), (1,1), generator=self.gen, dtype=int16))]
             self.start = self.cube.toColor()
             self.cube.algo(self.path)
             self.finish = self.cube.toColor()
             self.cube.setState(self.start)
 
         try:
-            return torch.tensor(next(self.perms)).float(), one_hot(torch.tensor(self.action),18).float()
+            return tensor(next(self.perms)).float(), one_hot(tensor(self.action),18).float()
         except StopIteration:
             self.action = self.path[0]
             self.path = self.path[1:]
             self.perms = RandomColorPermutor(self.gen, [self.start, self.cube.toColor(), self.finish], self.colors)
             self.cube.act(self.action)
-            return torch.tensor(next(self.perms)).float(), one_hot(torch.tensor(self.action),18).float()
+            return tensor(next(self.perms)).float(), one_hot(tensor(self.action),18).float()
 
     def __len__(self):
         return self.size
@@ -73,7 +72,7 @@ class RandomColorPermutor():
         if self.limit < 1:
             raise StopIteration
         self.limit -= 1
-        out = [int(i) for i in list(torch.randperm(8, generator=self.gen, dtype=torch.uint8))][:6]
+        out = [int(i) for i in list(randperm(8, generator=self.gen, dtype=uint8))][:6]
         out = [[out[i] for i in cube] for cube in self.cubes]
         out = [[Cube.color_hot[i] for i in cube] for cube in out]
         out = [item for sublist in out for item in sublist]
