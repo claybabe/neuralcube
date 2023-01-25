@@ -30,19 +30,20 @@ class BrownianAntipodalPaths(Dataset):
             self.cube.setState(self.start)
 
         try:
-            return torch.tensor([item for sublist in next(self.perms) for item in sublist]).float(), one_hot(torch.tensor(self.action),18).float()
+            return torch.tensor(next(self.perms)).float(), one_hot(torch.tensor(self.action),18).float()
         except StopIteration:
             self.action = self.path[0]
             self.path = self.path[1:]
             self.perms = RandomColorPermutor(self.gen, [self.start, self.cube.getState(), self.finish], self.colors)
             self.cube.act(self.action)
-            return torch.tensor([item for sublist in next(self.perms) for item in sublist]).float(), one_hot(torch.tensor(self.action),18).float()
+            return torch.tensor(next(self.perms)).float(), one_hot(torch.tensor(self.action),18).float()
 
     def __len__(self):
         return self.size
 
 class RandomColorPermutor():
     base = [0]*9 + [1]*9 + [2]*9 + [3]*9 + [4]*9 + [5]*9
+    color_hot = ((0, 0, 0),(0, 0, 1),(0, 1, 0),(0, 1, 1),(1, 0, 0),(1, 0, 1),(1, 1, 0),(1, 1, 1))
     def __init__(self, gen, cubes, limit):
         self.gen = gen
         self.limit = limit
@@ -54,8 +55,12 @@ class RandomColorPermutor():
         if self.limit < 1:
             raise StopIteration
         self.limit -= 1
-        perm = [int(i) for i in list(torch.randperm(8, generator=self.gen, dtype=torch.uint8))][:6]
-        return [[perm[i] for i in cube] for cube in self.cubes]
+        out = [int(i) for i in list(torch.randperm(8, generator=self.gen, dtype=torch.uint8))][:6]
+        out = [[out[i] for i in cube] for cube in self.cubes]
+        out = [item for sublist in out for item in sublist]
+        out = [RandomColorPermutor.color_hot[i] for i in out]
+        out = [item for sublist in out for item in sublist]
+        return out
 
     def __iter__(self):
         return self
