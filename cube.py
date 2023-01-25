@@ -1,6 +1,8 @@
 # 2023 - copyright - all rights reserved - clayton thomas baber
 
 class Cube():
+    base_color = tuple([0]*9 + [1]*9 + [2]*9 + [3]*9 + [4]*9 + [5]*9)
+    color_hot = ((0, 0, 0),(0, 0, 1),(0, 1, 0),(0, 1, 1),(1, 0, 0),(1, 0, 1),(1, 1, 0),(1, 1, 1))
     solved = tuple([*range(54)])
     antiaction = (2, 1, 0, 5, 4, 3, 8, 7, 6, 11, 10, 9, 14, 13, 12, 17, 16, 15)
     actions = (
@@ -1332,6 +1334,12 @@ class Cube():
 
     def isSolved(self):
         return tuple(self.state) == Cube.solved
+
+    def translate(self):
+        state = [Cube.base_color[i] for i in self.state]
+        state = [Cube.color_hot[i] for i in state]
+        state = [item for sublist in state for item in sublist]
+        return state
 
     def __repr__(self):
         return repr(self.state)

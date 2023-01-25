@@ -46,9 +46,9 @@ class BrownianAntipodalPaths(Dataset):
         if not self.path:
             self.cube.algo([int(i) for i in list(torch.randperm(len(Cube.actions), generator=self.gen, dtype=torch.uint8))][:self.wander])
             self.path = Cube.orbits[int(torch.randint(len(Cube.orbits), (1,1), generator=self.gen, dtype=torch.int16))]
-            self.start = self.cube.getState()
+            self.start = self.cube.translate()
             self.cube.algo(self.path)
-            self.finish = self.cube.getState()
+            self.finish = self.cube.translate()
             self.cube.setState(self.start)
 
         try:
@@ -56,7 +56,7 @@ class BrownianAntipodalPaths(Dataset):
         except StopIteration:
             self.action = self.path[0]
             self.path = self.path[1:]
-            self.perms = RandomColorPermutor(self.gen, [self.start, self.cube.getState(), self.finish], self.colors)
+            self.perms = RandomColorPermutor(self.gen, [self.start, self.cube.translate(), self.finish], self.colors)
             self.cube.act(self.action)
             return torch.tensor(next(self.perms)).float(), one_hot(torch.tensor(self.action),18).float()
 
@@ -64,14 +64,10 @@ class BrownianAntipodalPaths(Dataset):
         return self.size
 
 class RandomColorPermutor():
-    base = [0]*9 + [1]*9 + [2]*9 + [3]*9 + [4]*9 + [5]*9
-    color_hot = ((0, 0, 0),(0, 0, 1),(0, 1, 0),(0, 1, 1),(1, 0, 0),(1, 0, 1),(1, 1, 0),(1, 1, 1))
     def __init__(self, gen, cubes, limit):
         self.gen = gen
         self.limit = limit
         self.cubes = cubes
-        for i,v in enumerate(self.cubes):
-            self.cubes[i] = [RandomColorPermutor.base[i] for i in v]
 
     def __next__(self):
         if self.limit < 1:
@@ -80,7 +76,7 @@ class RandomColorPermutor():
         out = [int(i) for i in list(torch.randperm(8, generator=self.gen, dtype=torch.uint8))][:6]
         out = [[out[i] for i in cube] for cube in self.cubes]
         out = [item for sublist in out for item in sublist]
-        out = [RandomColorPermutor.color_hot[i] for i in out]
+        out = [Cube.color_hot[i] for i in out]
         out = [item for sublist in out for item in sublist]
         return out
 
