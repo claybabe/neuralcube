@@ -1335,9 +1335,12 @@ class Cube():
     def isSolved(self):
         return tuple(self.state) == Cube.solved
 
-    def translate(self):
-        state = [Cube.base_color[i] for i in self.state]
-        state = [Cube.color_hot[i] for i in state]
+    def toColor(self):
+        return [Cube.base_color[i] for i in self.state]
+
+    def toColorHot(self, other=None):
+        subject = self.toColor() if other is None else other
+        state = [Cube.color_hot[i] for i in subject]
         state = [item for sublist in state for item in sublist]
         return state
 

@@ -46,9 +46,9 @@ class BrownianAntipodalPaths(Dataset):
         if not self.path:
             self.cube.algo([int(i) for i in list(torch.randperm(len(Cube.actions), generator=self.gen, dtype=torch.uint8))][:self.wander])
             self.path = Cube.orbits[int(torch.randint(len(Cube.orbits), (1,1), generator=self.gen, dtype=torch.int16))]
-            self.start = self.cube.translate()
+            self.start = self.cube.toColor()
             self.cube.algo(self.path)
-            self.finish = self.cube.translate()
+            self.finish = self.cube.toColor()
             self.cube.setState(self.start)
 
         try:
@@ -56,7 +56,7 @@ class BrownianAntipodalPaths(Dataset):
         except StopIteration:
             self.action = self.path[0]
             self.path = self.path[1:]
-            self.perms = RandomColorPermutor(self.gen, [self.start, self.cube.translate(), self.finish], self.colors)
+            self.perms = RandomColorPermutor(self.gen, [self.start, self.cube.toColor(), self.finish], self.colors)
             self.cube.act(self.action)
             return torch.tensor(next(self.perms)).float(), one_hot(torch.tensor(self.action),18).float()
 
@@ -75,8 +75,8 @@ class RandomColorPermutor():
         self.limit -= 1
         out = [int(i) for i in list(torch.randperm(8, generator=self.gen, dtype=torch.uint8))][:6]
         out = [[out[i] for i in cube] for cube in self.cubes]
+        out = [[Cube.color_hot[i] for i in cube] for cube in out]
         out = [item for sublist in out for item in sublist]
-        out = [Cube.color_hot[i] for i in out]
         out = [item for sublist in out for item in sublist]
         return out
 
