@@ -2,9 +2,31 @@
 
 import torch
 from torch import Generator
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
+from pytorch_lightning import LightningDataModule
 from torch.nn.functional import one_hot
 from cube import Cube
+
+class BrownianAntipodalDataModule(LightningDataModule):
+    def __init__(self, train_size, train_batch, train_wander, train_colors, val_size, val_batch, val_wander, val_colors, train_seed=133742247331, val_seed=272497620):
+        super().__init__()
+        self.train_size, self.train_batch, self.train_wander, self.train_colors = train_size, train_batch, train_wander, train_colors
+        self.val_size, self.val_batch, self.val_wander, self.val_colors = val_size, val_batch, val_wander, val_colors
+        self.train_seed, self.val_seed = train_seed, val_seed
+
+    def train_dataloader(self):
+        return DataLoader(
+                    BrownianAntipodalPaths(self.train_size, self.train_wander, self.train_colors, self.train_seed),
+                    batch_size = self.train_batch,
+                    shuffle = False,
+                    num_workers = 0)
+
+    def val_dataloader(self):
+        return DataLoader(
+                    BrownianAntipodalPaths(self.val_size, self.val_wander, self.val_colors, self.val_seed),
+                    batch_size = self.val_batch,
+                    shuffle = False,
+                    num_workers = 0)
 
 class BrownianAntipodalPaths(Dataset):
     def __init__(self, size, wander, colors, seed=272497620):
@@ -66,4 +88,6 @@ class RandomColorPermutor():
         return self
 
 if __name__ == "__main__":
-    print(next(iter(BrownianAntipodalPaths(1, 0, 1))))
+    module = BrownianAntipodalDataModule(10, 10, 0, 10,  1, 1, 0, 1)
+    print("train sample:\n", next(iter(module.train_dataloader())))
+    print("\nval sample:\n", next(iter(module.val_dataloader())))
