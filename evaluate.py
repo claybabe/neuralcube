@@ -5,14 +5,18 @@ from model import BrownianAntipodalNavigator
 from torch import Generator, randint, tensor, argmax
 from torch.nn.functional import one_hot
 from tkinter import Tk, filedialog
+import torch
 
 if __name__ == "__main__":
+    torch.manual_seed(0)
     root = Tk()
     root.withdraw()
-    model_path = filedialog.askopenfilename()
-
-    navigator = BrownianAntipodalNavigator()
-    navigator.load_from_checkpoint(model_path)
+    models = []
+    for _ in range(int(input("number of models? "))):
+        model_path = filedialog.askopenfilename()
+        navigator = BrownianAntipodalNavigator()
+        navigator.load_from_checkpoint(model_path)
+        models.append(navigator)
 
     cube = Cube()
     goal = cube.toColorHot()
@@ -21,6 +25,7 @@ if __name__ == "__main__":
     generator.manual_seed(12345678)
 
     results = {"solved": 0, "cyclefail": 0, "timeout": 0, "longest": 0}
+    choices = {}
     for i in range(100):
         cube.act(int(randint(0, 17, (1,), generator=generator)))
         pig = Cube()
@@ -33,7 +38,13 @@ if __name__ == "__main__":
         for j in range(20):
             length += 1
             x = tensor(start + pig.toColorHot() + goal).float()
-            x = int(argmax(navigator(x)))
+            a = tensor([0]*18).float()
+            for model in models:
+                a += model(x)
+            x = int(argmax(a))
+            if x not in choices:
+                choices[x] = 0
+            choices[x] += 1
             pig.act(x)
             if pig.getState() in history:
                 results["cyclefail"] += 1
@@ -49,4 +60,4 @@ if __name__ == "__main__":
             if not broke:
                 results["timeout"] += 1
         results["longest"] = max(results["longest"], length)
-    print(results)
+    print(results, choices)
