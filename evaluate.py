@@ -32,7 +32,7 @@ if __name__ == "__main__":
         length = 0
         for j in range(20):
             length += 1
-            x = tensor(start + cube.toColorHot() + goal).float()
+            x = tensor(start + pig.toColorHot() + goal).float()
             x = int(argmax(navigator(x)))
             pig.act(x)
             if pig.getState() in history:
