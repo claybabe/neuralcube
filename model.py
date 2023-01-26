@@ -25,6 +25,7 @@ class BrownianAntipodalNavigator(LightningModule):
         x, y = batch
         y_hat = self(x)
         loss = mse_loss(y_hat, y)
+        self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -35,7 +36,7 @@ class BrownianAntipodalNavigator(LightningModule):
             total += 1
             if int(argmax(v)) == int(argmax(y[k])):
                 correct += 1
-        self.log("val_loss", 1 - correct/total)
+        self.log("val_loss", 1 - correct/total, prog_bar=True)
 
     def configure_optimizers(self):
         return SGD(self.parameters(), lr=0.0048)
