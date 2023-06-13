@@ -22,3 +22,8 @@ build the data `python dataset.py`
 train the model `python model.py`
 
 evaluate ensembles `python evaluate.py`
+
+#WIP
+
+this is very much still a work in progress.
+things are sure to change significantly :)
