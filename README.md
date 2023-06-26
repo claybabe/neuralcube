@@ -5,7 +5,7 @@ neural simulations of rubik's cube
 ## Debian 12
 install prereqs `sudo apt install git python3.11-venv python3-tk`
 
-clone repo `git clone https://github.com/theOGbaber/neuralcube`
+clone repo `git clone https://github.com/claybabe/neuralcube`
 
 `cd neuralcube`
 
