@@ -1,3 +1,4 @@
 __pycache__/
 lightning_logs/
 env/
+precomputed_rubiks_data/
