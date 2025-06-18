@@ -1,88 +1,122 @@
-# 2023 - copyright - all rights reserved - clayton thomas baber
+# 2025 - copyright - all rights reserved - clayton thomas baber
 
-from torch import Generator, tensor, randperm, randint, uint8, int16
+import os, tqdm
+from torch import tensor, load, save, float32
 from torch.utils.data import Dataset, DataLoader
 from pytorch_lightning import LightningDataModule
-from torch.nn.functional import one_hot
 from cube import Cube
 
-class BrownianAntipodalDataModule(LightningDataModule):
-    def __init__(self, train_size, train_batch, train_wander, train_colors, val_size, val_batch, val_wander, val_colors, train_seed=133742247331, val_seed=272497620):
+class RubikDistanceDataModule(LightningDataModule):
+    def __init__(self, train_batch, val_batch):
         super().__init__()
-        self.train_size, self.train_batch, self.train_wander, self.train_colors = train_size, train_batch, train_wander, train_colors
-        self.val_size, self.val_batch, self.val_wander, self.val_colors = val_size, val_batch, val_wander, val_colors
-        self.train_seed, self.val_seed = train_seed, val_seed
-
+        self.train_batch = train_batch
+        self.val_batch = val_batch
+        
     def train_dataloader(self):
         return DataLoader(
-                    BrownianAntipodalPaths(self.train_size, self.train_wander, self.train_colors, self.train_seed),
+                    RubikDistance(),
                     batch_size = self.train_batch,
-                    shuffle = False,
+                    shuffle = True,
                     num_workers = 0)
 
     def val_dataloader(self):
         return DataLoader(
-                    BrownianAntipodalPaths(self.val_size, self.val_wander, self.val_colors, self.val_seed),
+                    RubikDistance(),
                     batch_size = self.val_batch,
                     shuffle = False,
                     num_workers = 0)
 
-class BrownianAntipodalPaths(Dataset):
-    def __init__(self, size, wander, colors, seed=272497620):
-        self.size = size
-        self.wander = wander
-        self.colors = colors
-        self.gen = Generator()
-        self.gen.manual_seed(seed)
-        self.cube = Cube()
-        self.perms  = iter([])
-        self.start  = None
-        self.finish = None
-        self.path   = None
-        self.action = None
+class RubikDistance(Dataset):
+    def __init__(self, data_dir="precomputed_rubiks_data"):
+        self.data_dir = data_dir
+        self.inputs_path = os.path.join(self.data_dir, "rubiks_inputs.pt")
+        self.targets_path = os.path.join(self.data_dir, "rubiks_targets.pt")
+
+        if not os.path.exists(self.inputs_path) or not os.path.exists(self.targets_path):
+            os.makedirs(self.data_dir, exist_ok=True) # Create directory if it doesn't exist
+
+            all_inputs = []
+            all_targets = []
+
+            cube = Cube()
+            npath_idx = 0
+            ipath_idx = 0
+
+            contents = set()
+
+            print(f"Generating data samples...")
+            for _ in tqdm.tqdm(range(3840 * 20)):
+                # Logic to iterate through orbits and generate samples, as in your __getitem__
+                if ipath_idx >= len(Cube.orbits[npath_idx]):
+                    npath_idx += 1
+                    if npath_idx >= len(Cube.orbits):
+                        npath_idx = 0
+                    ipath_idx = 0
+                    cube.reset() # Reset cube when moving to a new 'root' of a path
+
+                # Apply the move and get the state
+                current_move = Cube.orbits[npath_idx][ipath_idx]
+                cube.act(current_move)
+
+                if cube.getState() not in contents:
+                    
+                    contents.add(cube.getState())
+                    
+                    # The input (cube state)
+                    input_vector = cube.toOneHot() # This should be your 324-element list/array
+
+                    # The target (distance down the path, current ipath_idx + 1)
+                    # Assuming distance is 1-indexed (1 to len(path))
+                    # If your model expects 0-indexed distance, adjust accordingly (e.g., ipath_idx)
+                    target_distance = ipath_idx + 1 # Distance starts from 1 for the first move
+
+                    all_inputs.append(input_vector)
+                    all_targets.append(target_distance)
+
+                ipath_idx += 1
+
+            print(f"Generated {len(all_inputs)} samples.")
+
+            # Convert to PyTorch tensors
+            inputs_tensor = tensor(all_inputs, dtype=float32)
+            targets_tensor = tensor(all_targets, dtype=float32) # Ensure float32 for MSELoss
+
+            # Save the tensors
+            inputs_path = os.path.join(self.data_dir, "rubiks_inputs.pt")
+            targets_path = os.path.join(self.data_dir, "rubiks_targets.pt")
+
+            save(inputs_tensor, inputs_path)
+            save(targets_tensor, targets_path)
+
+            print(f"Data saved to {inputs_path} and {targets_path}")
+
+        print(f"Loading data from {self.data_dir}...")
+        self.inputs = load(self.inputs_path)
+        self.targets = load(self.targets_path)
+        print(f"Data loaded: {len(self.inputs)} samples.")
+
+        # Ensure inputs are float and targets are float (for MSELoss)
+        # This is typically handled during generation and saving, but good to double-check.
+        self.inputs = self.inputs.float()
+        self.targets = self.targets.float()
+
+        self.size = len(self.inputs) # The dataset size is now fixed by the loaded data
+
 
     def __getitem__(self, idx):
-        if not self.path:
-            self.cube.algo([int(i) for i in list(randperm(len(Cube.actions), generator=self.gen, dtype=uint8))][:self.wander])
-            self.path = Cube.orbits[int(randint(len(Cube.orbits), (1,1), generator=self.gen, dtype=int16))]
-            self.start = self.cube.toColor()
-            self.cube.algo(self.path)
-            self.finish = self.cube.toColor()
-            self.cube.setState(self.start)
+        return self.inputs[idx], self.targets[idx]
+        
 
-        try:
-            return tensor(next(self.perms)).float(), one_hot(tensor(self.action),18).float()
-        except StopIteration:
-            self.action = self.path[0]
-            self.path = self.path[1:]
-            self.perms = RandomColorPermutor(self.gen, [self.start, self.cube.toColor(), self.finish], self.colors)
-            self.cube.act(self.action)
-            return tensor(next(self.perms)).float(), one_hot(tensor(self.action),18).float()
 
     def __len__(self):
         return self.size
 
-class RandomColorPermutor():
-    def __init__(self, gen, cubes, limit):
-        self.gen = gen
-        self.limit = limit
-        self.cubes = cubes
-
-    def __next__(self):
-        if self.limit < 1:
-            raise StopIteration
-        self.limit -= 1
-        out = [int(i) for i in list(randperm(8, generator=self.gen, dtype=uint8))][:6]
-        out = [[out[i] for i in cube] for cube in self.cubes]
-        out = [[Cube.color_hot[i] for i in cube] for cube in out]
-        out = [item for sublist in out for item in sublist]
-        out = [item for sublist in out for item in sublist]
-        return out
-
-    def __iter__(self):
-        return self
-
 if __name__ == "__main__":
-    module = BrownianAntipodalDataModule(10, 10, 0, 10,  1, 1, 0, 1)
-    print("train sample:\n", next(iter(module.train_dataloader())))
+    module = RubikDistanceDataModule(1, 1)
+
+    train_sample = iter(module.train_dataloader())
+    
+    for i, sample in enumerate(train_sample):
+        print("train sample:\n", sample)
+    
     print("\nval sample:\n", next(iter(module.val_dataloader())))
