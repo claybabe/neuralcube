@@ -1,92 +1,49 @@
-# 2023 - copyright - all rights reserved - clayton thomas baber
+# 2025 - copyright - all rights reserved - clayton thomas baber
 
 from cube import Cube
-from model import BrownianAntipodalNavigator
-from torch import Generator, randint, tensor, argmax, rand, ones
-from torch.nn.functional import one_hot
+from model import RubikDistancePredictor
+from torch import tensor, argmin, float32
 from tkinter import Tk, filedialog
-import torch
 
-def getChoice(pig, pigstory, sample):
-    turtle = Cube()
-    checks = 0
-    for choice in getChoices(sample):
-        turtle.setState(pig)
-        turtle.act(choice)
-        if turtle.getState() in pigstory:
-            checks += 1
-        else:
-            return choice, checks
-    return False, checks
+def sprout(cube):
+    sprouts = []
+    for i in range(18):
+        seedling = Cube(cube)
+        seedling.act(i)
+        sprouts.append(seedling.toOneHot())
+    return sprouts
 
-def getChoices(sample):
-    n = tensor(18)
-    mask = ones(n)
-    guesses = []
-    for _ in range(int(n)):
-        guess = argmax(sample * mask)
-        guesses.append(int(guess))
-        mask += one_hot(guess, n) * -1
-    return guesses
 
 if __name__ == "__main__":
-    torch.manual_seed(0)
     root = Tk()
     root.withdraw()
-    models = []
-    for _ in range(int(input("number of models? "))):
-        model_path = filedialog.askopenfilename()
-        navigator = BrownianAntipodalNavigator()
-        navigator.load_from_checkpoint(model_path)
-        models.append(navigator)
+    
+    model_path = filedialog.askopenfilename()
+    model = RubikDistancePredictor.load_from_checkpoint(model_path, map_location='cpu')
 
     cube = Cube()
-    goal = cube.toColorHot()
-
-    generator = Generator()
-    generator.manual_seed(12345678)
-
-    results = {"solved": 0, "cyclefail": 0, "timeout": 0, "longest": 0, "checks": 0}
-    choices = {}
-    for i in range(42):
-        cube.act(int(randint(0, 17, (1,), generator=generator)))
-        pig = Cube()
-        pig.setState(cube.getState())
-        start = pig.toColorHot()
+    success = 0
+    for orbit in Cube.orbits:
+        cube.reset()    
+        cube.algo(orbit[:6])
         history = set()
-        broke = False
-        length = 0
-        actions = []
-        for j in range(42):
-            length += 1
-            history.add(pig.getState())
-
-            x = tensor(start + pig.toColorHot() + goal).float()
-            a = tensor([0]*18).float()
-            for model in models:
-                a += model(x)
-
-            x, checks = getChoice(pig.getState(), history, a)
-            results["checks"] += checks
-            if x is False:
-                results["cyclefail"] += 1
-                print("cyclefail")
-                broke = True
+        history.add(cube.getState())
+        for i in range(21):
+            probe =  tensor(sprout(cube), dtype=float32)
+            predictions = model(probe)
+            choice = argmin(predictions)
+            #print(predictions)
+            cube.act(choice)
+            if cube.getState() in history:
+                print("unfortunately there was a CYCLE !!!!!")
+                cube.reset()
                 break
-            if x not in choices:
-                choices[x] = 0
-            choices[x] += 1
-            pig.act(x)
-            actions.append(x)
-            if pig.isSolved():
-                broke = True
+            if cube.isSolved():
+                print(f"SOLVED in {i+1}")
+                success += 1
                 break
-        if pig.isSolved():
-            results["solved"] += 1
-        else:
-            if not broke:
-                results["timeout"] += 1
-                print("timeout")
-        results["longest"] = max(results["longest"], length)
-        print(actions, "\n", pig)
-    print(results, choices)
+            history.add(cube.getState())
+            #print(i)
+        if not cube.isSolved():
+            print("COULDNT SOLVE IN 21")
+    print(f"successfull {success/len(Cube.orbits)} times")
