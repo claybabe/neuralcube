@@ -1,7 +1,7 @@
-# 2023 - copyright - all rights reserved - clayton thomas baber
+# 2025 - copyright - all rights reserved - clayton thomas baber
 
 class Cube():
-    base_color = tuple([0]*9 + [1]*9 + [2]*9 + [3]*9 + [4]*9 + [5]*9)
+    base_color = tuple([1]*9 + [2]*9 + [3]*9 + [4]*9 + [5]*9 + [6]*9)
     color_hot = ((0, 0, 0),(0, 0, 1),(0, 1, 0),(0, 1, 1),(1, 0, 0),(1, 0, 1),(1, 1, 0),(1, 1, 1))
     solved = tuple([*range(54)])
     antiaction = (2, 1, 0, 5, 4, 3, 8, 7, 6, 11, 10, 9, 14, 13, 12, 17, 16, 15)
@@ -1343,6 +1343,15 @@ class Cube():
         state = [Cube.color_hot[i] for i in subject]
         state = [item for sublist in state for item in sublist]
         return state
+
+    def toOneHot(self, other=None):
+        subject = self.toColor() if other is None else other
+        out = []
+        for sticker in subject:
+            color = [0] * 6
+            color[sticker - 1] = 1
+            out += color
+        return out
 
     def __repr__(self):
         return repr(self.state)
