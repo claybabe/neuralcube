@@ -3,7 +3,7 @@
 from tqdm import tqdm
 from cube import Cube
 from model import RubikDistancePredictor
-from torch import tensor, argmin, float32
+from torch import tensor, argsort, float32
 from tkinter import Tk, filedialog
 
 def sprout(cube):
@@ -18,8 +18,12 @@ if __name__ == "__main__":
     root = Tk()
     root.withdraw()
     
-    model_path = filedialog.askopenfilename()
-    model = RubikDistancePredictor.load_from_checkpoint(model_path, map_location='cpu')
+    models = []
+    model_paths = []
+    for _ in range(int(input("number of models? "))):
+        model_path = filedialog.askopenfilename()
+        model_paths.append(model_path)
+        models.append(RubikDistancePredictor.load_from_checkpoint(model_path, map_location='cpu'))
 
     cube = Cube()
     cases = set()
@@ -30,7 +34,7 @@ if __name__ == "__main__":
     total = len(cases)
     spacer = len(str(total))
     success = 0
-    cycle = 0
+    dead = 0
     timeout = 0
     
     with tqdm(total=total, desc="Evaluating") as pbar:
@@ -41,22 +45,37 @@ if __name__ == "__main__":
             
             for i in range(21):
                 probe =  tensor(sprout(cube), dtype=float32)
-                predictions = model(probe)
-                choice = argmin(predictions)
-                #print(predictions)
-                cube.act(choice)
-                if cube.getState() in history:
-                    cycle += 1
+
+                predictions = tensor([0]*18, dtype=float32)
+                for model in models:
+                    predictions += model(probe).squeeze()
+                
+                chosen = None
+                choices = argsort(predictions)
+
+                for choice in choices:
+                    test = Cube(cube)
+                    test.act(choice)
+                    if test.getState() not in history:
+                        chosen = choice
+                        break
+                
+                if chosen is None:
+                    dead += 1
                     cube.reset()
                     break
+
+                cube.act(choice)
+                
                 if cube.isSolved():
                     success += 1
                     break
+
                 history.add(cube.getState())
             
             if not cube.isSolved():
                 timeout += 1
 
-            pbar.set_postfix(cycl = f"{cycle:0{spacer}d}", timo = f"{timeout:0{spacer}d}", accu=f"{success/total:6.4f}")
+            pbar.set_postfix(accu=f"{success/total:6.4f}", dead=f"{dead:0{spacer}d}", solv = f"{success:0{spacer}d}", tout = f"{timeout:0{spacer}d}")
             pbar.update(1)
-    print(f"done evaluating {model_path}")
+    print(f"done evaluating: {success/total} accuracy.\n", "\n".join(model_paths))
