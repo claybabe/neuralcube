@@ -1,5 +1,6 @@
 # 2025 - copyright - all rights reserved - clayton thomas baber
 
+from time import time
 from tqdm import tqdm
 from cube import Cube
 from model import RubikDistancePredictor
@@ -33,16 +34,18 @@ if __name__ == "__main__":
         cases.add(cube.getState())
     total = len(cases)
     spacer = len(str(total))
-    success = 0
-    dead = 0
-    timeout = 0
     
+    outcomes = {"success":0, "dead":0, "timeout":0, "saved":0}
+    memo = {}
+
+    start_time = time()
     with tqdm(total=total, desc="Evaluating") as pbar:
-        for case in cases:
+        for checked, case in enumerate(cases, start=1):
             cube.setState(case)
             history = set()
             history.add(cube.getState())
             
+            outcome = None
             for i in range(21):
                 probe =  tensor(sprout(cube), dtype=float32)
 
@@ -61,21 +64,38 @@ if __name__ == "__main__":
                         break
                 
                 if chosen is None:
-                    dead += 1
-                    cube.reset()
+                    outcome = "dead"
                     break
 
                 cube.act(choice)
-                
+                state = cube.getState()
+                if state in memo:
+                    outcomes["saved"] += 1
+                    outcome = memo[state]
+                    break
+
                 if cube.isSolved():
-                    success += 1
+                    outcome = "success"
                     break
 
                 history.add(cube.getState())
             
-            if not cube.isSolved():
-                timeout += 1
+            if outcome is None:
+                outcome = "timeout"
 
-            pbar.set_postfix(accu=f"{success/total:6.4f}", dead=f"{dead:0{spacer}d}", solv = f"{success:0{spacer}d}", tout = f"{timeout:0{spacer}d}")
+            outcomes[outcome] += 1
+            for visited in history:
+                memo[visited] = outcome
+
+            pbar.set_postfix(
+                accu = f"{outcomes['success']/checked:6.4f}",
+                dead = f"{outcomes['dead']:0{spacer}d}",
+                save = f"{outcomes['saved']:0{spacer}d}",
+                solv = f"{outcomes['success']:0{spacer}d}",
+                tout = f"{outcomes['timeout']:0{spacer}d}"
+            )
             pbar.update(1)
-    print(f"done evaluating: {success/total} accuracy.\n", "\n".join(model_paths))
+        
+
+    end_time = time()
+    print(f"done evaluating: {outcomes['success']/total} accuracy. {end_time - start_time}\n", "\n".join(model_paths))
