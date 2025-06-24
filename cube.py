@@ -1,8 +1,6 @@
 # 2025 - copyright - all rights reserved - clayton thomas baber
 
 class Cube():
-    base_color = tuple([1]*9 + [2]*9 + [3]*9 + [4]*9 + [5]*9 + [6]*9)
-    color_hot = ((0, 0, 0),(0, 0, 1),(0, 1, 0),(0, 1, 1),(1, 0, 0),(1, 0, 1),(1, 1, 0),(1, 1, 1))
     solved = tuple([*range(54)])
     antiaction = (2, 1, 0, 5, 4, 3, 8, 7, 6, 11, 10, 9, 14, 13, 12, 17, 16, 15)
     actions = (
@@ -1335,23 +1333,41 @@ class Cube():
     def isSolved(self):
         return tuple(self.state) == Cube.solved
 
-    def toColor(self):
-        return [Cube.base_color[i] for i in self.state]
+    def toColor(self, color=[1, 2, 3, 4, 5, 6]):
+        color_map = tuple([color[0]]*9 + [color[1]]*9 + [color[2]]*9 + [color[3]]*9 + [color[4]]*9 + [color[5]]*9)
+        return [color_map[i] for i in self.state]
 
-    def toColorHot(self, other=None):
-        subject = self.toColor() if other is None else other
-        state = [Cube.color_hot[i] for i in subject]
+    def toColorHot(self, color=[1, 2, 3, 4, 5, 6]):
+        color_hot = ((0, 0, 0),(0, 0, 1),(0, 1, 0),(0, 1, 1),(1, 0, 0),(1, 0, 1),(1, 1, 0),(1, 1, 1))
+        subject = self.toColor(color)
+        state = [color_hot[i] for i in subject]
         state = [item for sublist in state for item in sublist]
         return state
 
-    def toOneHot(self, other=None):
-        subject = self.toColor() if other is None else other
+    def toOneHot(self, color=[1, 2, 3, 4, 5, 6]):
+        subject = self.toColor(color)
         out = []
         for sticker in subject:
-            color = [0] * 6
-            color[sticker - 1] = 1
-            out += color
+            out_hot = [0] * 6
+            out_hot[sticker - 1] = 1
+            out += out_hot
         return out
+
+    def getProbe(self):
+        sprouts = []
+        for i in range(18):
+            seedling = Cube(self)
+            seedling.act(i)
+            sprouts.append(seedling.toOneHot())
+        return sprouts
+
+    def getAdjacent(self):
+        adjs = []
+        for i in range(18):
+            adj = Cube(self)
+            adj.act(i)
+            adjs.append(adj)
+        return adjs
 
     def __repr__(self):
         return repr(self.state)

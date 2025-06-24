@@ -7,14 +7,6 @@ from model import RubikDistancePredictor
 from torch import tensor, argsort, float32
 from tkinter import Tk, filedialog
 
-def sprout(cube):
-    sprouts = []
-    for i in range(18):
-        seedling = Cube(cube)
-        seedling.act(i)
-        sprouts.append(seedling.toOneHot())
-    return sprouts
-
 if __name__ == "__main__":
     root = Tk()
     root.withdraw()
@@ -30,7 +22,7 @@ if __name__ == "__main__":
     cases = set()
     for orbit in Cube.orbits:
         cube.reset()
-        cube.algo(orbit[:6])
+        cube.algo(orbit[:20])
         cases.add(cube.getState())
     total = len(cases)
     spacer = len(str(total))
@@ -47,7 +39,7 @@ if __name__ == "__main__":
             
             outcome = None
             for i in range(21):
-                probe =  tensor(sprout(cube), dtype=float32)
+                probe =  tensor(cube.getProbe(), dtype=float32)
 
                 predictions = tensor([0]*18, dtype=float32)
                 for model in models:

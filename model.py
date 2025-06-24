@@ -3,8 +3,9 @@
 from torch import round, abs
 from torch.nn import Linear, Sequential, ReLU, MSELoss
 from torch.optim import SGD
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.lr_scheduler import CyclicLR
 from pytorch_lightning import Trainer, LightningModule
+from pytorch_lightning.callbacks import LearningRateMonitor
 from dataset import RubikDistanceDataModule
 
 class RubikDistancePredictor(LightningModule):
@@ -35,14 +36,19 @@ class RubikDistancePredictor(LightningModule):
         self.log('val_loss', val_loss, on_epoch=True, prog_bar=True)
 
         return val_loss
-    
+
     def configure_optimizers(self):
         optimizer = SGD(self.parameters(), lr=self.hparams.learning_rate)
-        scheduler = MultiStepLR(
+        scheduler = CyclicLR(
             optimizer,
-            milestones=[24795, 74385],
-            gamma=0.9
+            base_lr = 1e-3,
+            max_lr = 2e-2,
+            step_size_up = 106160,
+            step_size_down = 318480,
+            mode = "exp_range",
+            gamma = 0.9999999
         )
+
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
@@ -52,10 +58,17 @@ class RubikDistancePredictor(LightningModule):
                 'name': 'lr_scheduler'
             }
         }
-
+    
 if __name__ == "__main__":
     for _ in range(3):
         model = RubikDistancePredictor(5832, 1e-3)
         datamodule = RubikDistanceDataModule(64, 24795)
-        trainer = Trainer(max_epochs=324, benchmark=True, accelerator="gpu")
+
+        lr_monitor = LearningRateMonitor(logging_interval='step')
+        trainer = Trainer(
+            max_epochs=128,
+            benchmark=True,
+            accelerator="gpu",
+            callbacks=[lr_monitor]
+        )
         trainer.fit(model, datamodule)
