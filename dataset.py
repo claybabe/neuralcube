@@ -7,6 +7,8 @@ from torch.utils.data import Dataset, DataLoader
 from pytorch_lightning import LightningDataModule
 from cube import Cube
 from collections import defaultdict
+from itertools import permutations
+from random import shuffle
 
 class RubikDistanceDataModule(LightningDataModule):
     def __init__(self, train_batch, val_batch):
@@ -27,6 +29,19 @@ class RubikDistanceDataModule(LightningDataModule):
                     batch_size = self.val_batch,
                     shuffle = False,
                     num_workers = 1)
+
+class RandomPermutationSubset():
+    def __init__(self, base=(1, 2, 3, 4, 5, 6), size=1):
+        self.base = base
+        self.size = size
+        permu = permutations(base)
+        next(permu) #skip the first, we add it after choosing shuffeled size - 1 perms
+        self.perms = [*permu]
+    def __next__(self):
+        shuffle(self.perms)
+        return [self.base, *self.perms[:self.size - 1]]
+    def __len__(self):
+        return self.size
 
 class RubikDistanceAugmentedData(Dataset):
     def __init__(self, data_dir="precomputed_rubiks_data"):
@@ -57,18 +72,11 @@ class RubikDistanceAugmentedData(Dataset):
 
             inputs = []
             outputs = []
-            variants = [
-                [1, 2, 3, 4, 5, 6],
-                [2, 3, 4, 5, 6, 1],
-                [3, 4, 5, 6, 1, 2],
-                [4, 5, 6, 1, 2, 3],
-                [5, 6, 1, 2, 3, 4],
-                [6, 1, 2, 3, 4, 5]
-            ]
+            variants = RandomPermutationSubset((1, 2, 3, 4, 5, 6), 6)
 
             with tqdm(total=len(contents) * len(variants), desc="Augmenting Data") as pbar:
-                for color in variants:
-                    for k, v in contents.items():
+                for k, v in contents.items():
+                    for color in next(variants):
                         worker = Cube()
                         worker.setState(k)
                         

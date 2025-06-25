@@ -44,9 +44,7 @@ class RubikDistancePredictor(LightningModule):
             base_lr = 1e-3,
             max_lr = 2e-2,
             step_size_up = 106160,
-            step_size_down = 318480,
-            mode = "exp_range",
-            gamma = 0.9999999
+            step_size_down = 318480
         )
 
         return {
