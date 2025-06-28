@@ -14,7 +14,7 @@ if __name__ == "__main__":
     models = []
     model_paths = []
     for _ in range(int(input("number of models? "))):
-        model_path = filedialog.askopenfilename()
+        model_path = filedialog.askopenfilename(initialdir="lightning_logs")
         model_paths.append(model_path)
         models.append(RubikDistancePredictor.load_from_checkpoint(model_path, map_location='cpu'))
 

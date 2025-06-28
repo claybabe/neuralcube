@@ -11,14 +11,15 @@ from itertools import permutations
 from random import shuffle
 
 class RubikDistanceDataModule(LightningDataModule):
-    def __init__(self, train_batch, val_batch):
+    def __init__(self, train_batch, val_batch, regenerate=False):
         super().__init__()
         self.train_batch = train_batch
         self.val_batch = val_batch
+        self.regenerate = regenerate
         
     def train_dataloader(self):
         return DataLoader(
-                    RubikDistanceAugmentedData(),
+                    RubikDistanceAugmentedData(regenerate=self.regenerate),
                     batch_size = self.train_batch,
                     shuffle = True,
                     num_workers = 4)
@@ -28,7 +29,7 @@ class RubikDistanceDataModule(LightningDataModule):
                     RubikDistanceData(),
                     batch_size = self.val_batch,
                     shuffle = False,
-                    num_workers = 1)
+                    num_workers = 4)
 
 class RandomPermutationSubset():
     def __init__(self, base=(1, 2, 3, 4, 5, 6), size=1):
@@ -44,12 +45,12 @@ class RandomPermutationSubset():
         return self.size
 
 class RubikDistanceAugmentedData(Dataset):
-    def __init__(self, data_dir="precomputed_rubiks_data"):
+    def __init__(self, data_dir="precomputed_rubiks_data", regenerate=False):
         self.data_dir = data_dir
         self.inputs_path = os.path.join(self.data_dir, "rubiks_inputs_augmented.pt")
         self.targets_path = os.path.join(self.data_dir, "rubiks_targets_augmented.pt")
 
-        if not os.path.exists(self.inputs_path) or not os.path.exists(self.targets_path):
+        if regenerate or not os.path.exists(self.inputs_path) or not os.path.exists(self.targets_path):
             os.makedirs(self.data_dir, exist_ok=True)
             
             cube = Cube()
@@ -76,8 +77,8 @@ class RubikDistanceAugmentedData(Dataset):
 
             with tqdm(total=len(contents) * len(variants), desc="Augmenting Data") as pbar:
                 for k, v in contents.items():
+                    worker = Cube()
                     for color in next(variants):
-                        worker = Cube()
                         worker.setState(k)
                         
                         inputs.append(worker.toOneHot(color))

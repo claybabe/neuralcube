@@ -1,6 +1,5 @@
 # 2025 - copyright - all rights reserved - clayton thomas baber
 
-from torch import round, abs
 from torch.nn import Linear, Sequential, ReLU, MSELoss
 from torch.optim import SGD
 from torch.optim.lr_scheduler import CyclicLR
@@ -9,9 +8,16 @@ from pytorch_lightning.callbacks import LearningRateMonitor
 from dataset import RubikDistanceDataModule
 
 class RubikDistancePredictor(LightningModule):
-    def __init__(self, hidden_dim=256, learning_rate=1e-3):
+    def __init__(self,
+                 hidden_dim=256,
+                 base_lr=1e-3,
+                 max_lr=2e-2,
+                 step_up=88480,
+                 step_down=265440
+        ):
         super().__init__()
         self.save_hyperparameters()
+
         self.network = Sequential(
             Linear(324, hidden_dim), ReLU(),
             Linear(hidden_dim, hidden_dim // 2), ReLU(),
@@ -38,13 +44,13 @@ class RubikDistancePredictor(LightningModule):
         return val_loss
 
     def configure_optimizers(self):
-        optimizer = SGD(self.parameters(), lr=self.hparams.learning_rate)
+        optimizer = SGD(self.parameters(), lr=self.hparams.base_lr)
         scheduler = CyclicLR(
             optimizer,
-            base_lr = 1e-3,
-            max_lr = 2e-2,
-            step_size_up = 106160,
-            step_size_down = 318480
+            base_lr = self.hparams.base_lr,
+            max_lr = self.hparams.max_lr,
+            step_size_up = self.hparams.step_up,
+            step_size_down = self.hparams.step_down
         )
 
         return {
@@ -58,13 +64,19 @@ class RubikDistancePredictor(LightningModule):
         }
     
 if __name__ == "__main__":
-    for _ in range(3):
-        model = RubikDistancePredictor(5832, 1e-3)
-        datamodule = RubikDistanceDataModule(64, 24795)
+    for lr in [1e-4, 5e-5, 1e-5]:
+        model = RubikDistancePredictor(
+            hidden_dim = 6480,
+            base_lr = lr,
+            max_lr = 2e-2,
+            step_up = 265400,
+            step_down = 796200
+        )
+        datamodule = RubikDistanceDataModule(64, 24795, regenerate=True)
 
         lr_monitor = LearningRateMonitor(logging_interval='step')
         trainer = Trainer(
-            max_epochs=128,
+            max_epochs=160,
             benchmark=True,
             accelerator="gpu",
             callbacks=[lr_monitor]
