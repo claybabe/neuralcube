@@ -36,10 +36,8 @@ class RubikEncoderDataModule(LightningDataModule):
 class RubikEncoderDataset(Dataset):
     def __init__(self, 
             data_dir="precomputed_rubiks_data",
-            input_name = "rubiks_inputs_augmented.pt",
-            targets_name = "rubiks_targets_augmented.pt",
             regenerate=False,
-            depth=42,
+            depth=8,
             who="train"
         ):
         self.data_dir = data_dir

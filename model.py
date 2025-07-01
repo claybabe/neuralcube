@@ -241,20 +241,15 @@ def modelREPD():
         step_down = 214602
     )
     trainer = Trainer(
-        max_epochs=80,
+        max_epochs=8,
         benchmark=True,
         accelerator="gpu",
         callbacks=[lr_monitor]
     )
     
-    encoder = RubikEncoder.load_from_checkpoint("lightning_logs/version_222/checkpoints/epoch=7-step=286136.ckpt")
-
     trainer.fit(encoder, datamodule)
-    #important
+    #important; 
     #encoder.freeze()
-
-    exit()
-
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
     datamodule = RubikDistanceDataModule(64, 24795, regenerate=True)
@@ -268,7 +263,6 @@ def modelREPD():
     )
     #important
     model.encoder = encoder
-    
 
     trainer = Trainer(
         max_epochs=512,
