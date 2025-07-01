@@ -25,8 +25,15 @@ evaluate ensembles `python evaluate.py`
 
 interactive visual simulation `python simulate.py`
 
+
 123 456 789 qwe rty uio - perform single action
+
 Home                    - stop solve and reset
+
 End                     - stop solve
+
 Enter                   - start solve attempt
+
 . (period)              - single step of solve
+
+
