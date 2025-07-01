@@ -23,7 +23,10 @@ train the model `python model.py`
 
 evaluate ensembles `python evaluate.py`
 
-#WIP
+interactive visual simulation `python simulate.py`
 
-this is very much still a work in progress.
-things are sure to change significantly :)
+123 456 789 qwe rty uio - perform single action
+Home                    - stop solve and reset
+End                     - stop solve
+Enter                   - start solve attempt
+. (period)              - single step of solve

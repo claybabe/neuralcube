@@ -3,9 +3,10 @@
 from time import time
 from tqdm import tqdm
 from cube import Cube
-from model import RubikDistancePredictor
+from model import RubikDistancePredictor, RubikEncodedDistancePredictor
 from torch import tensor, argsort, float32
 from tkinter import Tk, filedialog
+from collections import defaultdict
 
 if __name__ == "__main__":
     root = Tk()
@@ -14,9 +15,17 @@ if __name__ == "__main__":
     models = []
     model_paths = []
     for _ in range(int(input("number of models? "))):
+        choice = int(input("1) RPD 2) REDP ? "))
         model_path = filedialog.askopenfilename(initialdir="lightning_logs")
         model_paths.append(model_path)
-        models.append(RubikDistancePredictor.load_from_checkpoint(model_path, map_location='cpu'))
+        if choice == 1:
+            model = RubikDistancePredictor.load_from_checkpoint(model_path, map_location='cpu')
+            model.eval()
+            models.append(model)
+        elif choice == 2:
+            model = RubikEncodedDistancePredictor.load_from_checkpoint(model_path, map_location='cpu')
+            model.eval()
+            models.append(model)
 
     cube = Cube()
     cases = set()
@@ -34,32 +43,29 @@ if __name__ == "__main__":
     with tqdm(total=total, desc="Evaluating") as pbar:
         for checked, case in enumerate(cases, start=1):
             cube.setState(case)
-            history = set()
-            history.add(cube.getState())
+            history = defaultdict(int)
             
             outcome = None
-            for i in range(21):
+            for i in range(42):
+                state = cube.getState()
                 probe =  tensor(cube.getProbe(), dtype=float32)
 
                 predictions = tensor([0]*18, dtype=float32)
                 for model in models:
                     predictions += model(probe).squeeze()
                 
-                chosen = None
                 choices = argsort(predictions)
 
-                for choice in choices:
-                    test = Cube(cube)
-                    test.act(choice)
-                    if test.getState() not in history:
-                        chosen = choice
-                        break
-                
-                if chosen is None:
+                choice = history[state]
+
+                if choice < 18:
+                    action = choices[choice]
+                    history[state] += 1
+                else:
                     outcome = "dead"
                     break
 
-                cube.act(choice)
+                cube.act(action)
                 state = cube.getState()
                 if state in memo:
                     outcomes["saved"] += 1
@@ -69,8 +75,6 @@ if __name__ == "__main__":
                 if cube.isSolved():
                     outcome = "success"
                     break
-
-                history.add(cube.getState())
             
             if outcome is None:
                 outcome = "timeout"

@@ -1337,11 +1337,10 @@ class Cube():
         color_map = tuple([color[0]]*9 + [color[1]]*9 + [color[2]]*9 + [color[3]]*9 + [color[4]]*9 + [color[5]]*9)
         return [color_map[i] for i in self.state]
 
-    def toColorHot(self, color=[1, 2, 3, 4, 5, 6]):
-        color_hot = ((0, 0, 0),(0, 0, 1),(0, 1, 0),(0, 1, 1),(1, 0, 0),(1, 0, 1),(1, 1, 0),(1, 1, 1))
+    def toColorHot(self, color=[1, 2, 3, 4, 5, 6], L=1):
+        color_hot = ((0, 0, 0),(0, 0, L),(0, L, 0),(0, L, L),(L, 0, 0),(L, 0, L),(L, L, 0),(L, L, L))
         subject = self.toColor(color)
         state = [color_hot[i] for i in subject]
-        state = [item for sublist in state for item in sublist]
         return state
 
     def toOneHot(self, color=[1, 2, 3, 4, 5, 6]):

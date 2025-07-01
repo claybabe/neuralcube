@@ -8,7 +8,92 @@ from pytorch_lightning import LightningDataModule
 from cube import Cube
 from collections import defaultdict
 from itertools import permutations
-from random import shuffle
+from random import shuffle, randint
+
+class RubikEncoderDataModule(LightningDataModule):
+    def __init__(self, train_batch, val_batch, regenerate=False):
+        super().__init__()
+        self.train_batch = train_batch
+        self.val_batch = val_batch
+        self.regenerate = regenerate
+        self.train_dataset = RubikEncoderDataset(regenerate=self.regenerate, who="train")
+        self.val_dataset = RubikEncoderDataset(regenerate=self.regenerate, who="val", depth=3)
+
+    def train_dataloader(self):
+        return DataLoader(
+                    self.train_dataset,
+                    batch_size = self.train_batch,
+                    shuffle = True,
+                    num_workers = 4)
+    
+    def val_dataloader(self):
+        return DataLoader(
+                    self.val_dataset,
+                    batch_size = self.val_batch,
+                    shuffle = False,
+                    num_workers = 4)
+
+class RubikEncoderDataset(Dataset):
+    def __init__(self, 
+            data_dir="precomputed_rubiks_data",
+            input_name = "rubiks_inputs_augmented.pt",
+            targets_name = "rubiks_targets_augmented.pt",
+            regenerate=False,
+            depth=42,
+            who="train"
+        ):
+        self.data_dir = data_dir
+        path = f"rubiks_inputs_encoder_{who}.pt"
+        self.inputs_path = os.path.join(self.data_dir, path)
+        self.depth = depth
+        
+        if regenerate or not os.path.exists(self.inputs_path):
+            os.makedirs(self.data_dir, exist_ok=True)
+            with tqdm(total=(len(Cube.orbits) + 1) * self.depth, desc="Generating Data") as pbar:
+                cube = Cube()
+                contents = set()
+                contents.add(cube.getState())
+                for i in range(self.depth):
+                    cube.act(randint(0,17))
+                    contents.add(cube.getState())
+                    pbar.update(1)
+
+                for orbit in Cube.orbits:
+                    cube.reset()
+                    cube.algo(orbit)
+                    contents.add(cube.getState())
+                    for i in range(self.depth):
+                        cube.act(randint(0,17))
+                        contents.add(cube.getState())
+                        pbar.update(1)
+                    
+            inputs = []
+            
+            with tqdm(total=len(contents) * 720, desc="Augmenting Data") as pbar:
+                for state in contents:
+                    worker = Cube()
+                    worker.setState(state)
+                    for color in permutations((1, 2, 3, 4, 5, 6)):
+                        inputs.append(worker.toOneHot(color))
+                        pbar.update(1)
+
+            inputs_tensor = tensor((inputs), dtype=float32)
+            save(inputs_tensor, self.inputs_path)
+            print(f"Data saved to {self.inputs_path}")
+
+        print(f"Loading data from {self.data_dir}...")
+        self.inputs = load(self.inputs_path)
+        
+        self.size = len(self.inputs)
+
+    def __getitem__(self, idx):
+        return self.inputs[idx]
+
+    def getAll(self):
+        return self.inputs
+
+    def __len__(self):
+        return self.size
 
 class RubikDistanceDataModule(LightningDataModule):
     def __init__(self, train_batch, val_batch, regenerate=False):
@@ -16,17 +101,19 @@ class RubikDistanceDataModule(LightningDataModule):
         self.train_batch = train_batch
         self.val_batch = val_batch
         self.regenerate = regenerate
+        self.train_dataset = RubikDistanceAugmentedDataset(regenerate=self.regenerate)
+        self.val_dataset = RubikDistanceDataset(regenerate=self.regenerate)
         
     def train_dataloader(self):
         return DataLoader(
-                    RubikDistanceAugmentedData(regenerate=self.regenerate),
+                    self.train_dataset,
                     batch_size = self.train_batch,
                     shuffle = True,
                     num_workers = 4)
 
     def val_dataloader(self):
         return DataLoader(
-                    RubikDistanceData(),
+                    self.val_dataset,
                     batch_size = self.val_batch,
                     shuffle = False,
                     num_workers = 4)
@@ -44,11 +131,18 @@ class RandomPermutationSubset():
     def __len__(self):
         return self.size
 
-class RubikDistanceAugmentedData(Dataset):
-    def __init__(self, data_dir="precomputed_rubiks_data", regenerate=False):
+class RubikDistanceAugmentedDataset(Dataset):
+    def __init__(self,
+            data_dir="precomputed_rubiks_data",
+            input_name = "rubiks_inputs_augmented.pt",
+            targets_name = "rubiks_targets_augmented.pt",
+            regenerate=False
+        ):
         self.data_dir = data_dir
-        self.inputs_path = os.path.join(self.data_dir, "rubiks_inputs_augmented.pt")
-        self.targets_path = os.path.join(self.data_dir, "rubiks_targets_augmented.pt")
+        self.input_name = input_name
+        self.targets_name = targets_name
+        self.inputs_path = os.path.join(self.data_dir, self.input_name)
+        self.targets_path = os.path.join(self.data_dir, self.targets_name)
 
         if regenerate or not os.path.exists(self.inputs_path) or not os.path.exists(self.targets_path):
             os.makedirs(self.data_dir, exist_ok=True)
@@ -73,7 +167,7 @@ class RubikDistanceAugmentedData(Dataset):
 
             inputs = []
             outputs = []
-            variants = RandomPermutationSubset((1, 2, 3, 4, 5, 6), 6)
+            variants = RandomPermutationSubset((1, 2, 3, 4, 5, 6), 1)
 
             with tqdm(total=len(contents) * len(variants), desc="Augmenting Data") as pbar:
                 for k, v in contents.items():
@@ -112,13 +206,13 @@ class RubikDistanceAugmentedData(Dataset):
     def __len__(self):
         return self.size
 
-class RubikDistanceData(Dataset):
-    def __init__(self, data_dir="precomputed_rubiks_data"):
+class RubikDistanceDataset(Dataset):
+    def __init__(self, data_dir="precomputed_rubiks_data", regenerate=False):
         self.data_dir = data_dir
         self.inputs_path = os.path.join(self.data_dir, "rubiks_inputs.pt")
         self.targets_path = os.path.join(self.data_dir, "rubiks_targets.pt")
 
-        if not os.path.exists(self.inputs_path) or not os.path.exists(self.targets_path):
+        if regenerate or not os.path.exists(self.inputs_path) or not os.path.exists(self.targets_path):
             os.makedirs(self.data_dir, exist_ok=True)
             
             cube = Cube()
