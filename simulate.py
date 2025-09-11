@@ -145,7 +145,7 @@ def pygame_loop(queue, stop_event):
 
         result = neuralcube.toOneHot()
         result = tensor(result, dtype=float32)
-        result = model(result)
+        result = model(result).detach()
         result = round(float(result) * 1000)
         result = str(result)
 
