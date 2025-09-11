@@ -199,7 +199,7 @@ if __name__ == "__main__":
     neuralcube.algo(Cube.orbits[1337])
 
 
-    model_path = filedialog.askopenfilename(initialdir="lightning_logs")
+    model_path = filedialog.askopenfilename(initialdir="trained_models")
     model = RubikDistancePredictor.load_from_checkpoint(model_path, map_location="cpu")
 
     try:
