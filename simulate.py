@@ -196,7 +196,7 @@ if __name__ == "__main__":
     neuralcube = Cube()
     neuralcube.history = defaultdict(int)
 
-    neuralcube.algo(Cube.orbits[42])
+    neuralcube.algo(Cube.orbits[1337])
 
 
     model_path = filedialog.askopenfilename(initialdir="lightning_logs")
