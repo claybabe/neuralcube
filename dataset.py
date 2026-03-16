@@ -2,265 +2,192 @@
 
 import os
 from tqdm import tqdm
-from torch import tensor, load, save, float32
-from torch.utils.data import Dataset, DataLoader
+from torch import tensor, load, save, float32, from_numpy
+from torch.utils.data import Dataset, DataLoader, Subset
 from pytorch_lightning import LightningDataModule
 from cube import Cube
-from collections import defaultdict
-from itertools import permutations
-from random import shuffle, randint
+import numpy as np
+from collections import deque
 
-class RubikEncoderDataModule(LightningDataModule):
-    def __init__(self, train_batch, val_batch, regenerate=False):
-        super().__init__()
-        self.train_batch = train_batch
-        self.val_batch = val_batch
-        self.regenerate = regenerate
-        self.train_dataset = RubikEncoderDataset(regenerate=self.regenerate, who="train")
-        self.val_dataset = RubikEncoderDataset(regenerate=self.regenerate, who="val", depth=3)
-
-    def train_dataloader(self):
-        return DataLoader(
-                    self.train_dataset,
-                    batch_size = self.train_batch,
-                    shuffle = True,
-                    num_workers = 4)
-    
-    def val_dataloader(self):
-        return DataLoader(
-                    self.val_dataset,
-                    batch_size = self.val_batch,
-                    shuffle = False,
-                    num_workers = 4)
-
-class RubikEncoderDataset(Dataset):
-    def __init__(self, 
-            data_dir="precomputed_rubiks_data",
-            regenerate=False,
-            depth=8,
-            who="train"
-        ):
-        self.data_dir = data_dir
-        path = f"rubiks_inputs_encoder_{who}.pt"
-        self.inputs_path = os.path.join(self.data_dir, path)
-        self.depth = depth
-        
-        if regenerate or not os.path.exists(self.inputs_path):
-            os.makedirs(self.data_dir, exist_ok=True)
-            with tqdm(total=(len(Cube.orbits) + 1) * self.depth, desc="Generating Data") as pbar:
-                cube = Cube()
-                contents = set()
-                contents.add(cube.getState())
-                for i in range(self.depth):
-                    cube.act(randint(0,17))
-                    contents.add(cube.getState())
-                    pbar.update(1)
-
-                for orbit in Cube.orbits:
-                    cube.reset()
-                    cube.algo(orbit)
-                    contents.add(cube.getState())
-                    for i in range(self.depth):
-                        cube.act(randint(0,17))
-                        contents.add(cube.getState())
-                        pbar.update(1)
-                    
-            inputs = []
-            
-            with tqdm(total=len(contents) * 720, desc="Augmenting Data") as pbar:
-                for state in contents:
-                    worker = Cube()
-                    worker.setState(state)
-                    for color in permutations((1, 2, 3, 4, 5, 6)):
-                        inputs.append(worker.toOneHot(color))
-                        pbar.update(1)
-
-            inputs_tensor = tensor((inputs), dtype=float32)
-            save(inputs_tensor, self.inputs_path)
-            print(f"Data saved to {self.inputs_path}")
-
-        print(f"Loading data from {self.data_dir}...")
-        self.inputs = load(self.inputs_path)
-        
-        self.size = len(self.inputs)
-
-    def __getitem__(self, idx):
-        return self.inputs[idx]
-
-    def getAll(self):
-        return self.inputs
-
-    def __len__(self):
-        return self.size
+# --- CONFIGURATION ---
+DATA_DIR = "precomputed_rubiks_data"
+INPUTS_FILE = os.path.join(DATA_DIR, "inputs.bin")
+TARGETS_FILE = os.path.join(DATA_DIR, "targets.bin")
+META_FILE = os.path.join(DATA_DIR, "metadata.pt")
 
 class RubikDistanceDataModule(LightningDataModule):
-    def __init__(self, train_batch, val_batch, regenerate=False):
-        super().__init__()
-        self.train_batch = train_batch
-        self.val_batch = val_batch
-        self.regenerate = regenerate
-        self.train_dataset = RubikDistanceAugmentedDataset(regenerate=self.regenerate)
-        self.val_dataset = RubikDistanceDataset(regenerate=self.regenerate)
+  def __init__(self, data_dir="precomputed_rubiks_data", train_batch_size=1024, val_batch_size=1024, train_split=0.9, num_workers=4):
+    super().__init__()
+    self.data_dir = data_dir
+    self.train_batch_size = train_batch_size
+    self.val_batch_size = val_batch_size
+    self.train_split = train_split
+    self.num_workers = num_workers
+
+  def setup(self, stage=None):
+    # 1. Initialize the full dataset (this just maps the files, doesn't load them)
+    entire_dataset = RubikMmapDataset()
+    dataset_size = len(entire_dataset)
+    
+    # 2. Create shuffled indices for the split
+    indices = np.arange(dataset_size)
+    np.random.seed(42) # For reproducible splits
+    np.random.shuffle(indices)
+    
+    split_point = int(dataset_size * self.train_split)
+    train_indices = indices[:split_point]
+    val_indices = indices[split_point:]
+
+    # 3. Create Subsets
+    # Subsets are great because they don't copy the data, just the index list
+    self.train_ds = Subset(entire_dataset, train_indices)
+    self.val_ds = Subset(entire_dataset, val_indices)
+
+  def train_dataloader(self):
+    return DataLoader(
+      self.train_ds,
+      batch_size=self.train_batch_size,
+      shuffle=True, # Important!
+      num_workers=self.num_workers,
+      pin_memory=True,
+      persistent_workers=True # Keeps workers alive between epochs
+    )
+
+  def val_dataloader(self):
+    return DataLoader(
+      self.val_ds,
+      batch_size=self.val_batch_size,
+      shuffle=False,
+      num_workers=self.num_workers,
+      pin_memory=True,
+      persistent_workers=True
+    )
+
+class RubikManager:
+  """Handles RAM-efficient generation and disk-based loading."""
+  
+  @staticmethod
+  def generate_dataset(orbits, deep_layers=1):
+    """
+    Generates data using a byte-packed dictionary.
+    deep_layers: How many extra steps to explore from every point in the orbit.
+    """
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
+    # 1. RAM-Efficient Storage
+    # key: bytes(54 stickers), value: uint8 (distance)
+    contents = {}
+    
+    # Seed with solved state
+    solved_cube = Cube()
+    contents[bytes(solved_cube.state)] = 0
+
+    # Phase 1: Orbit Traversal
+    for orbit in tqdm(orbits, desc="Processing Orbits"):
+      cube = Cube()
+      cube.reset()
+      for i, action in enumerate(orbit, start=1):
+        cube.act(action)
         
-    def train_dataloader(self):
-        return DataLoader(
-                    self.train_dataset,
-                    batch_size = self.train_batch,
-                    shuffle = True,
-                    num_workers = 4)
-
-    def val_dataloader(self):
-        return DataLoader(
-                    self.val_dataset,
-                    batch_size = self.val_batch,
-                    shuffle = False,
-                    num_workers = 4)
-
-class RandomPermutationSubset():
-    def __init__(self, base=(1, 2, 3, 4, 5, 6), size=1):
-        self.base = base
-        self.size = size
-        permu = permutations(base)
-        next(permu) #skip the first, we add it after choosing shuffeled size - 1 perms
-        self.perms = [*permu]
-    def __next__(self):
-        shuffle(self.perms)
-        return [self.base, *self.perms[:self.size - 1]]
-    def __len__(self):
-        return self.size
-
-class RubikDistanceAugmentedDataset(Dataset):
-    def __init__(self,
-            data_dir="precomputed_rubiks_data",
-            input_name = "rubiks_inputs_augmented.pt",
-            targets_name = "rubiks_targets_augmented.pt",
-            regenerate=False
-        ):
-        self.data_dir = data_dir
-        self.input_name = input_name
-        self.targets_name = targets_name
-        self.inputs_path = os.path.join(self.data_dir, self.input_name)
-        self.targets_path = os.path.join(self.data_dir, self.targets_name)
-
-        if regenerate or not os.path.exists(self.inputs_path) or not os.path.exists(self.targets_path):
-            os.makedirs(self.data_dir, exist_ok=True)
+        # Current state on path
+        state_bytes = bytes(cube.state)
+        if state_bytes not in contents or i < contents[state_bytes]:
+          contents[state_bytes] = i
+        
+        # Phase 2: "Thickening" (BFS expansion from path)
+        # We use a simple frontier to go 'deep_layers' steps away
+        frontier = deque([(cube.state, i)])
+        for _ in range(deep_layers):
+          for _ in range(len(frontier)):
+            curr_state, curr_dist = frontier.popleft()
             
-            cube = Cube()
-            contents = defaultdict(lambda: 21)
-            contents[cube.getState()] = 0
-
-            with tqdm(total=sum(len(sublist) for sublist in Cube.orbits), desc="Generating Data") as pbar:
-                for orbit in Cube.orbits:
-                    cube.reset()
-                    for i, step in enumerate(orbit, start=1):
-                        cube.act(step)
-                        key = cube.getState()
-                        contents[key] = min(contents[key], i)
-
-                        for adj in cube.getAdjacent():
-                            key = adj.getState()
-                            contents[key] = min(contents[key], i + 1)
-
-                        pbar.update(1)
-
-            inputs = []
-            outputs = []
-            variants = RandomPermutationSubset((1, 2, 3, 4, 5, 6), 1)
-
-            with tqdm(total=len(contents) * len(variants), desc="Augmenting Data") as pbar:
-                for k, v in contents.items():
-                    worker = Cube()
-                    for color in next(variants):
-                        worker.setState(k)
-                        
-                        inputs.append(worker.toOneHot(color))
-                        outputs.append(v)
-                        pbar.update(1)
-
-            inputs_tensor = tensor((inputs), dtype=float32)
-            targets_tensor = tensor((outputs), dtype=float32)
+            # Use a temporary cube to find adjacents
+            temp_cube = Cube()
+            temp_cube.setState(curr_state)
             
-            inputs_path = os.path.join(self.data_dir, "rubiks_inputs_augmented.pt")
-            targets_path = os.path.join(self.data_dir, "rubiks_targets_augmented.pt")
+            for adj in temp_cube.getAdjacent():
+              adj_bytes = bytes(adj.state)
+              new_dist = curr_dist + 1
+              if adj_bytes not in contents or new_dist < contents[adj_bytes]:
+                contents[adj_bytes] = new_dist
+                # If you wanted to go even deeper, you'd add to frontier here
+                frontier.append((adj.state, new_dist))
 
-            save(inputs_tensor, inputs_path)
-            save(targets_tensor, targets_path)
+    # 2. Finalize to Disk (Memory Mapping)
+    num_samples = len(contents)
+    print(f"Finalizing {num_samples} samples to SSD...")
+    
+    # Pre-allocate binary files
+    inputs_mmap = np.memmap(INPUTS_FILE, dtype='uint8', mode='w+', shape=(num_samples, 54))
+    targets_mmap = np.memmap(TARGETS_FILE, dtype='uint8', mode='w+', shape=(num_samples,))
 
-            print(f"Data saved to {inputs_path} and {targets_path}")
+    for idx, (state_bytes, dist) in enumerate(contents.items()):
+      inputs_mmap[idx] = np.frombuffer(state_bytes, dtype='uint8')
+      targets_mmap[idx] = dist
+    
+    inputs_mmap.flush()
+    targets_mmap.flush()
+    
+    # Save metadata so we know the size when reloading
+    save({'num_samples': num_samples}, META_FILE)
+    print(f"Done! Data saved to {DATA_DIR}")
 
-        print(f"Loading data from {self.data_dir}...")
-        self.inputs = load(self.inputs_path)
-        self.targets = load(self.targets_path)
-        print(f"Data loaded: {len(self.inputs)} samples.")
+class RubikMmapDataset(Dataset):
+  """Zero-RAM Dataset that reads directly from disk."""
+  def __init__(self):
+    if not os.path.exists(META_FILE):
+      raise FileNotFoundError("Metadata not found. Run generation first.")
+      
+    meta = load(META_FILE)
+    self.num_samples = meta['num_samples']
+    
+    # mode='r' means we don't load into RAM; we map the file to virtual memory
+    self.inputs = np.memmap(INPUTS_FILE, dtype='uint8', mode='r', shape=(self.num_samples, 54))
+    self.targets = np.memmap(TARGETS_FILE, dtype='uint8', mode='r', shape=(self.num_samples,))
 
-        self.inputs = self.inputs.float()
-        self.targets = self.targets.float()
+  def __len__(self):
+    return self.num_samples
 
-        self.size = len(self.inputs)
+  def __getitem__(self, idx):
+    # 1. Get raw sticker indices (0-53)
+    state_ints = self.inputs[idx]
+    target = int(self.targets[idx])
 
-    def __getitem__(self, idx):
-        return self.inputs[idx], self.targets[idx]
+    # 2. Map stickers to colors (0-5)
+    # Based on your Cube class: stickers 0-8 are color 0, 9-17 are color 1, etc.
+    # floor division by 9 gives us the face/color index
+    color_indices = state_ints // 9 
 
-    def __len__(self):
-        return self.size
+    # 3. Convert to One-Hot
+    one_hot = np.zeros((54, 6), dtype=np.float32)
+    one_hot[np.arange(54), color_indices] = 1.0
+    
+    return from_numpy(one_hot.flatten()), tensor(target, dtype=float32)
 
-class RubikDistanceDataset(Dataset):
-    def __init__(self, data_dir="precomputed_rubiks_data", regenerate=False):
-        self.data_dir = data_dir
-        self.inputs_path = os.path.join(self.data_dir, "rubiks_inputs.pt")
-        self.targets_path = os.path.join(self.data_dir, "rubiks_targets.pt")
-
-        if regenerate or not os.path.exists(self.inputs_path) or not os.path.exists(self.targets_path):
-            os.makedirs(self.data_dir, exist_ok=True)
-            
-            cube = Cube()
-            contents = defaultdict(lambda: 21)
-            contents[tuple(cube.toOneHot())] = 0
-
-            with tqdm(total=sum(len(sublist) for sublist in Cube.orbits), desc="Generating Data") as pbar:
-                for orbit in Cube.orbits:
-                    cube.reset()
-                    for i, step in enumerate(orbit, start=1):
-                        cube.act(step)
-                        key = tuple(cube.toOneHot())
-                        contents[key] = min(contents[key], i)
-
-                        adjs = cube.getAdjacent()
-                        for adj in adjs:
-                            key = tuple(adj.toOneHot())
-                            contents[key] = min(contents[key], i + 1)
-
-                        pbar.update(1)
-
-            inputs_tensor = tensor(list(contents.keys()), dtype=float32)
-            targets_tensor = tensor(list(contents.values()), dtype=float32)
-            
-            inputs_path = os.path.join(self.data_dir, "rubiks_inputs.pt")
-            targets_path = os.path.join(self.data_dir, "rubiks_targets.pt")
-
-            save(inputs_tensor, inputs_path)
-            save(targets_tensor, targets_path)
-
-            print(f"Data saved to {inputs_path} and {targets_path}")
-
-        print(f"Loading data from {self.data_dir}...")
-        self.inputs = load(self.inputs_path)
-        self.targets = load(self.targets_path)
-        print(f"Data loaded: {len(self.inputs)} samples.")
-
-        self.inputs = self.inputs.float()
-        self.targets = self.targets.float()
-
-        self.size = len(self.inputs)
-
-    def __getitem__(self, idx):
-        return self.inputs[idx], self.targets[idx]
-
-    def __len__(self):
-        return self.size
-
+# --- EXAMPLE USAGE ---
 if __name__ == "__main__":
-    module = RubikDistanceDataModule(1, 1)
+  # 1. GENERATE
+  manager = RubikManager()
+  manager.generate_dataset(Cube.orbits, deep_layers=1) # Comment out if already generated
 
-    print("train sample:\n", next(iter(module.train_dataloader())))
-    print("\nval sample:\n", next(iter(module.val_dataloader())))
+  # 2. INITIALIZE DATA MODULE
+  # Note: Use your actual desired batch_size here, e.g., 1024
+  module = RubikDistanceDataModule(batch_size=1024)
+
+  # 3. MANUAL SETUP
+  # This is the line you were missing! 
+  # Lightning normally does this for you, but for manual testing, it's required.
+  module.setup() 
+
+  # 4. TEST LOADERS
+  train_loader = module.train_dataloader()
+  val_loader = module.val_dataloader()
+
+  inputs, targets = next(iter(train_loader))
+  print("Train batch inputs shape:", inputs.shape)
+  print("Train batch targets shape:", targets.shape)
+  print("First target in batch:", targets[0].item())
+
+  del train_loader
+  del val_loader
+  print("done with test")
