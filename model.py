@@ -1,8 +1,9 @@
 # 2025 - copyright - all rights reserved - clayton thomas baber
 
+import torch
 from torch.nn import Linear, Sequential, ReLU, MSELoss
 from torch.optim import SGD
-from torch.optim.lr_scheduler import OneCycleLR
+from torch.optim.lr_scheduler import LambdaLR
 from pytorch_lightning import Trainer, LightningModule
 from pytorch_lightning.callbacks import LearningRateMonitor
 from dataset import RubikDistanceDataModule, RubikManager
@@ -11,19 +12,26 @@ import numpy as np
    
 class RubikDistancePredictor(LightningModule):
   def __init__(self,
-    hidden_dim = 256,
-    max_lr = 0.015,
-    total_steps = None,
-    epochs = None,
-    cycle_momentum = True,
-    anneal_strategy = "cos",
-    div_factor = 25,
-    final_div_factor = 1e4,
-    pct_start = 0.3
-    ):
+               hidden_dim=256,
+               train_ds_size=23364033,
+               batch_size=64,
+               start_lr=0.001,
+               schedule_lr=[(0.03, 5), (0.02, 2), (0.02, 40), (0.0001, 50)],
+               augment=False
+               ):
     super().__init__()
     self.save_hyperparameters()
-    print("RubikDistancePredictor \n", self.hparams)
+    
+    # Timeline derived from the Schedule
+    self.total_epochs = sum(stage[1] for stage in schedule_lr)
+    self.steps_per_epoch = int(np.ceil(train_ds_size / batch_size))
+    self.total_steps = self.total_epochs * self.steps_per_epoch
+    
+    print(f"--- SCHEDULE INITIALIZED ---")
+    print(f"Total Run Time: {self.total_epochs} Epochs")
+    print(f"Total Steps:    {self.total_steps}")
+    print(f"Starting LR:    {self.hparams.start_lr}")
+    print(f"Schedule:       {self.hparams.schedule_lr}")
 
     self.network = Sequential(
       Linear(324, self.hparams.hidden_dim), ReLU(),
@@ -36,9 +44,34 @@ class RubikDistancePredictor(LightningModule):
     return self.network(x)
 
   def training_step(self, batch, batch_idx):
-    x, y = batch
+    x, y = batch # x shape: [batch, 324], y shape: [batch]
+
+    if self.hparams.augment:    
+      # 1. Expand each item in the batch 6 times
+      # x_expanded shape: [batch * 6, 324]
+      x_aug = torch.repeat_interleave(x, 6, dim=0)
+      y_aug = torch.repeat_interleave(y, 6, dim=0)
+      
+      # 2. Reshape to manipulate the 6 color channels
+      # [batch * 6, 54, 6]
+      x_aug = x_aug.view(-1, 54, 6)
+      
+      # 3. Apply all 6 cyclic shifts across the augmented dimension
+      # We create an index tensor to shift each of the 6 copies differently
+      for i in range(6):
+        # Every 6th element gets a shift of 'i'
+        # This ensures each original 'x' is now represented in all 6 color states
+        x_aug[i::6] = torch.roll(x_aug[i::6], shifts=i, dims=2)
+      
+      # 4. Flatten back for the network
+      x_aug = x_aug.reshape(-1, 324)
+      x, y = x_aug, y_aug
+
+
+    # 5. Forward pass on the augmented batch
     predictions = self(x).squeeze()
     loss = self.loss_fn(predictions, y)
+    
     self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
     return loss
 
@@ -46,30 +79,48 @@ class RubikDistancePredictor(LightningModule):
     x, y = batch
     predictions = self(x).squeeze()
     val_loss = self.loss_fn(predictions, y)
+    
+    # Accuracy: Percentage of predictions within ±0.5 of integer target
+    diff = torch.abs(predictions - y)
+    acc = (diff < 0.5).float().mean()
+    
     self.log('val_loss', val_loss, on_epoch=True, prog_bar=True)
-
+    self.log('val_acc', acc, on_epoch=True, prog_bar=True)
     return val_loss
 
   def configure_optimizers(self):
-    optimizer = SGD(self.parameters(), lr=self.hparams.max_lr)
-    scheduler = OneCycleLR(
-      optimizer,
-      max_lr=self.hparams.max_lr,
-      total_steps=self.hparams.total_steps,
-      epochs=self.hparams.epochs,
-      cycle_momentum = self.hparams.cycle_momentum,
-      anneal_strategy = self.hparams.anneal_strategy,
-      div_factor = self.hparams.div_factor,
-      final_div_factor = self.hparams.final_div_factor,
-      pct_start = self.hparams.pct_start
-    )
+    # Base LR is 1.0 because the lambda provides absolute LR values
+    optimizer = SGD(self.parameters(), lr=1.0)
+    
+    segments = []
+    current_step_boundary = 0
+    current_lr = self.hparams.start_lr
+
+    for target_lr, duration_epochs in self.hparams.schedule_lr:
+      duration_steps = int(duration_epochs * self.steps_per_epoch)
+      segments.append({
+        "start": current_step_boundary,
+        "end": current_step_boundary + duration_steps,
+        "lrs": (current_lr, target_lr)
+      })
+      current_step_boundary += duration_steps
+      current_lr = target_lr
+
+    def schedule_lambda(current_step):
+      for seg in segments:
+        if seg["start"] <= current_step < seg["end"]:
+          # Linear interpolation within segments
+          t = (current_step - seg["start"]) / (seg["end"] - seg["start"])
+          return seg["lrs"][0] + t * (seg["lrs"][1] - seg["lrs"][0])
+      
+      # Final floor value if run exceeds steps
+      return self.hparams.schedule_lr[-1][0]
 
     return {
       'optimizer': optimizer,
       'lr_scheduler': {
-        'scheduler': scheduler,
+        'scheduler': LambdaLR(optimizer, schedule_lambda),
         'interval': 'step',
-        'frequency': 1,
         'name': 'lr_scheduler'
       }
     }
@@ -80,41 +131,36 @@ if __name__ == "__main__":
   manager.generate_dataset(Cube.orbits, deep_layers=2)
 
   # 1. Initialize Datamodule
-  datamodule = RubikDistanceDataModule(train_batch_size=64, val_batch_size=24795)
+  datamodule = RubikDistanceDataModule(train_batch_size=64, val_batch_size=24795, train_split=0.98)
   
   # 2. Manual Setup to populate the subsets
   datamodule.setup()
-  
-  # 3. Calculate steps properly
-  # len(datamodule.train_ds) gives you the count of samples after the 90/10 split
-  train_samples = len(datamodule.train_ds)
-  batch_size = datamodule.train_batch_size
-  max_epochs = 200
-  
-  # Formula: (total_samples / batch_size) rounded up * epochs
-  total_steps = np.ceil(train_samples / batch_size) * max_epochs
-  total_steps = int(total_steps) # Schedulers usually want an integer
 
+  # 3. Define a Learning Rate Schedule
+  start_lr = 0
+  schedule_lr = [
+    (0.05, 2),    # Aggressive Warmup
+    (0.0001, 30)  # Extended Precision Landing
+  ]
   lr_monitor = LearningRateMonitor(logging_interval='step')
-  for hidden_dim in [7776, 7128, 6480, 5832, 4536]:
-    
-    trainer = Trainer(
-      max_epochs=max_epochs,
-      benchmark=True,
-      accelerator="gpu",
-      callbacks=[lr_monitor]
-    )
+  
+  # 4. Initialize Model
+  model = RubikDistancePredictor(
+    hidden_dim=4536,
+    train_ds_size=len(datamodule.train_ds),
+    batch_size=datamodule.train_batch_size,
+    start_lr=start_lr,
+    schedule_lr=schedule_lr,
+    augment=True
+  )
 
-    model = RubikDistancePredictor(
-      hidden_dim = hidden_dim,
-      max_lr = 0.02,
-      total_steps = total_steps, 
-      epochs = trainer.max_epochs,
-      #cycle_momentum = False,
-      anneal_strategy = "linear",
-      div_factor = 2000,
-      final_div_factor = 0.0025,
-      pct_start = 0.18
-    )
-
-    trainer.fit(model, datamodule)
+  # 5. Hire a Trainer
+  trainer = Trainer(
+    max_epochs=model.total_epochs,
+    benchmark=True,
+    accelerator="gpu",
+    callbacks=[lr_monitor]
+  )
+  
+  # 6. Hit the gym
+  trainer.fit(model, datamodule)
