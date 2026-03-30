@@ -36,4 +36,6 @@ Enter                   - start solve attempt
 
 . (period)              - single step of solve
 
+b                       - single step to largest probed distance
+
 
