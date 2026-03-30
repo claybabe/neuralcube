@@ -38,6 +38,7 @@ def pygame_loop(queue, stop_event):
   running = True
   solving = False
   stepping = False
+  maxxing = 0
   while running:
     for event in pygame.event.get():
       if event.type == pygame.QUIT:
@@ -47,80 +48,59 @@ def pygame_loop(queue, stop_event):
         if event.key == pygame.K_ESCAPE:
           running = False
           stop_event.set()
-
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_1:
           neuralcube.act(0)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_2:
           neuralcube.act(1)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_3:
           neuralcube.act(2)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_4:
           neuralcube.act(3)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_5:
           neuralcube.act(4)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_6:
           neuralcube.act(5)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_7:
           neuralcube.act(6)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_8:
           neuralcube.act(7)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_9:
           neuralcube.act(8)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_q:
           neuralcube.act(9)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_w:
           neuralcube.act(10)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_e:
           neuralcube.act(11)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_r:
           neuralcube.act(12)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_t:
           neuralcube.act(13)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_y:
           neuralcube.act(14)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_u:
           neuralcube.act(15)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_i:
           neuralcube.act(16)
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_o:
           neuralcube.act(17)
-
-      if event.type == pygame.KEYDOWN:
+        if event.key == pygame.K_b:
+          maxxing = 1
         if event.key == pygame.K_HOME:
           neuralcube.reset()
           solving = False
 
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_END:
           neuralcube.history = defaultdict(int)
           solving = False
 
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_KP_ENTER:
           if not neuralcube.isSolved():
             solving = True
 
-      if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_PERIOD:
-          stepping = True
+          if not neuralcube.isSolved():
+            stepping = True
       
     if solving or stepping:
       stepping = False
@@ -142,6 +122,16 @@ def pygame_loop(queue, stop_event):
       if neuralcube.isSolved():
         solving = False
         neuralcube.history = defaultdict(int)            
+
+    if maxxing > 0:
+      maxxing -= 1
+      state = neuralcube.getState()
+      probe =  tensor(neuralcube.getProbe(), dtype=float32)
+      predictions = model(probe).squeeze()
+      choices = argsort(predictions)
+      action = choices[-1]
+      neuralcube.act(action)
+
 
     result = neuralcube.toOneHot()
     result = tensor(result, dtype=float32)
