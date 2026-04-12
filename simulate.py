@@ -136,7 +136,7 @@ def pygame_loop(queue, stop_event):
     result = neuralcube.toOneHot()
     result = tensor(result, dtype=float32)
     result = model(result).detach()
-    result = round(float(result) * 1000)
+    result = round(float(result) / len(model.models)* 1000)
     result = str(result)
 
     image = pygame.Surface.copy(original_image)
