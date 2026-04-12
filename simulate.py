@@ -6,7 +6,7 @@ import threading
 import sys
 import os
 from cube import Cube
-from model import RubikDistancePredictor
+from model import RubikDistancePredictor, RubikEnsemble
 from torch import tensor, argsort, float32
 from tkinter import Tk, filedialog
 from collections import defaultdict
@@ -188,9 +188,12 @@ if __name__ == "__main__":
 
   neuralcube.algo(Cube.orbits[1337])
 
-
-  model_path = filedialog.askopenfilename(initialdir="trained_models")
-  model = RubikDistancePredictor.load_from_checkpoint(model_path, map_location="cpu")
+  model_paths = []
+  for _ in range(int(input("number of models? "))):
+    model_path = filedialog.askopenfilename(initialdir="lightning_logs")
+    model_paths.append(model_path)
+  
+  model = RubikEnsemble(model_paths)
 
   try:
     asyncio.run(main())

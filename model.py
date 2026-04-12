@@ -124,43 +124,61 @@ class RubikDistancePredictor(LightningModule):
         'name': 'lr_scheduler'
       }
     }
-  
+
+class RubikEnsemble:
+  def __init__(self, model_paths, device="cpu"):
+    self.models = []
+    for path in model_paths:
+      m = RubikDistancePredictor.load_from_checkpoint(path, map_location=device)
+      m.eval()
+      self.models.append(m)
+    print(f"Ensemble loaded with {len(self.models)} models.")
+
+  def __call__(self, x):
+    with torch.no_grad():
+      # Collect raw predictions: shape [num_models, batch, 1] or [num_models, 1]
+      preds = torch.stack([m(x) for m in self.models])
+      # Sum across the models (dim=0) to return expected shape [batch, 1]
+      return torch.sum(preds, dim=0)
+
 if __name__ == "__main__":
   # 0. generate data
   manager = RubikManager()
   manager.generate_dataset(Cube.orbits, deep_layers=2)
 
-  # 1. Initialize Datamodule
-  datamodule = RubikDistanceDataModule(train_batch_size=64, val_batch_size=24795, train_split=0.98)
-  
-  # 2. Manual Setup to populate the subsets
-  datamodule.setup()
+  for _ in range(6):
 
-  # 3. Define a Learning Rate Schedule
-  start_lr = 0
-  schedule_lr = [
-    (0.05, 2),    # Aggressive Warmup
-    (0.0001, 30)  # Extended Precision Landing
-  ]
-  lr_monitor = LearningRateMonitor(logging_interval='step')
-  
-  # 4. Initialize Model
-  model = RubikDistancePredictor(
-    hidden_dim=4536,
-    train_ds_size=len(datamodule.train_ds),
-    batch_size=datamodule.train_batch_size,
-    start_lr=start_lr,
-    schedule_lr=schedule_lr,
-    augment=True
-  )
+    # 1. Initialize Datamodule
+    datamodule = RubikDistanceDataModule(train_batch_size=64, val_batch_size=24795, train_split=0.98)
+    
+    # 2. Manual Setup to populate the subsets
+    datamodule.setup()
 
-  # 5. Hire a Trainer
-  trainer = Trainer(
-    max_epochs=model.total_epochs,
-    benchmark=True,
-    accelerator="gpu",
-    callbacks=[lr_monitor]
-  )
-  
-  # 6. Hit the gym
-  trainer.fit(model, datamodule)
+    # 3. Define a Learning Rate Schedule
+    start_lr = 0
+    schedule_lr = [
+      (0.14, 1),
+      (0.00008, 60),
+    ]
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+    
+    # 4. Initialize Model
+    model = RubikDistancePredictor(
+      hidden_dim=4536,
+      train_ds_size=len(datamodule.train_ds),
+      batch_size=datamodule.train_batch_size,
+      start_lr=start_lr,
+      schedule_lr=schedule_lr,
+      augment=True
+    )
+
+    # 5. Hire a Trainer
+    trainer = Trainer(
+      max_epochs=model.total_epochs,
+      benchmark=True,
+      accelerator="gpu",
+      callbacks=[lr_monitor]
+    )
+    
+    # 6. Hit the gym
+    trainer.fit(model, datamodule)

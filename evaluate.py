@@ -3,7 +3,7 @@
 from time import time
 from tqdm import tqdm
 from cube import Cube
-from model import RubikDistancePredictor
+from model import RubikDistancePredictor, RubikEnsemble
 from torch import tensor, argsort, float32
 from tkinter import Tk, filedialog
 from collections import defaultdict
@@ -12,14 +12,12 @@ if __name__ == "__main__":
   root = Tk()
   root.withdraw()
   
-  models = []
   model_paths = []
   for _ in range(int(input("number of models? "))):
     model_path = filedialog.askopenfilename(initialdir="lightning_logs")
     model_paths.append(model_path)
-    model = RubikDistancePredictor.load_from_checkpoint(model_path, map_location='cpu')
-    model.eval()
-    models.append(model)
+  
+  model = RubikEnsemble(model_paths)
 
   cube = Cube()
   cases = set()
@@ -44,9 +42,7 @@ if __name__ == "__main__":
         state = cube.getState()
         probe =  tensor(cube.getProbe(), dtype=float32)
 
-        predictions = tensor([0]*18, dtype=float32)
-        for model in models:
-          predictions += model(probe).squeeze()
+        predictions = model(probe).squeeze()
         
         choices = argsort(predictions)
 
