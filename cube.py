@@ -1,4 +1,4 @@
-# 2025 - copyright - all rights reserved - clayton thomas baber
+# 2026 - copyright - all rights reserved - clayton thomas baber
 
 class Cube():
   solved = tuple([*range(54)])
@@ -1311,6 +1311,21 @@ class Cube():
   (17,14,1,3,7,14,1,14,2,9,4,17,5,14,7,10,16,0,4,6), (17,14,7,0,11,17,13,6,10,17,13,17,5,12,7,0,13,10,4,8), (17,14,7,0,11,17,13,6,10,17,13,17,12,5,7,0,13,10,4,8),
   (17,14,7,11,0,17,13,6,10,17,13,17,12,5,7,0,13,10,4,8), (17,14,10,3,16,14,10,14,2,9,4,6,10,16,1,5,14,11,4,6), (17,14,10,3,16,14,10,14,9,2,4,6,10,16,1,5,14,11,4,6))
   
+  # The 24 physical rotations of the cube (SO_3 group)
+  # Based on: Blue(0)-Top, Green(1)-Front, Cyan(2)-Right, 
+  # Magenta(3)-Back, Yellow(4)-Left, Red(5)-Bottom
+  # FIXME double check theses, vibin
+  #  in fact, let's do real rotation of the whole cube.
+  #   remember: rotate the solved
+  color_rotation = (
+    (0, 1, 2, 3, 4, 5), (0, 2, 3, 4, 1, 5), (0, 3, 4, 1, 2, 5), (0, 4, 1, 2, 3, 5),
+    (5, 1, 4, 3, 2, 0), (5, 4, 3, 2, 1, 0), (5, 3, 2, 1, 4, 0), (5, 2, 1, 4, 3, 0),
+    (1, 0, 4, 5, 2, 3), (1, 4, 5, 2, 0, 3), (1, 5, 2, 0, 4, 3), (1, 2, 0, 4, 5, 3),
+    (3, 0, 2, 5, 4, 1), (3, 2, 5, 4, 0, 1), (3, 5, 4, 0, 2, 1), (3, 4, 0, 2, 5, 1),
+    (2, 0, 1, 5, 3, 4), (2, 1, 5, 3, 0, 4), (2, 5, 3, 0, 1, 4), (2, 3, 0, 1, 5, 4),
+    (4, 0, 3, 5, 1, 2), (4, 3, 5, 1, 0, 2), (4, 5, 1, 0, 3, 2), (4, 1, 0, 3, 5, 2)
+  )
+
   def  __init__(self, cube=None):
     self.state = Cube.solved if cube is None else cube.state
 
@@ -1352,12 +1367,12 @@ class Cube():
       out += out_hot
     return out
 
-  def getProbe(self):
+  def getProbe(self, color=[1, 2, 3, 4, 5, 6]):
     sprouts = []
     for i in range(18):
       seedling = Cube(self)
       seedling.act(i)
-      sprouts.append(seedling.toOneHot())
+      sprouts.append(seedling.toOneHot(color=color))
     return sprouts
 
   def getAdjacent(self):

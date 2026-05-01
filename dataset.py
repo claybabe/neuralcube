@@ -1,8 +1,8 @@
-# 2025 - copyright - all rights reserved - clayton thomas baber
+# 2026 - copyright - all rights reserved - clayton thomas baber
 
 import os
 from tqdm import tqdm
-from torch import tensor, load, save, float32, from_numpy
+from torch import tensor, load, save, float32, from_numpy, log
 from torch.utils.data import Dataset, DataLoader, Subset
 from pytorch_lightning import LightningDataModule
 from cube import Cube
@@ -25,23 +25,49 @@ class RubikDistanceDataModule(LightningDataModule):
     self.num_workers = num_workers
 
   def setup(self, stage=None):
-    # 1. Initialize the full dataset (this just maps the files, doesn't load them)
     entire_dataset = RubikMmapDataset()
-    dataset_size = len(entire_dataset)
+    meta = load(META_FILE)
+    counts = meta['counts']
     
-    # 2. Create shuffled indices for the split
-    indices = np.arange(dataset_size)
-    np.random.seed(42) # For reproducible splits
-    np.random.shuffle(indices)
+    # Identify Anchor distances that MUST be in training
+    anchors = {0, 1, 2, 3}
     
-    split_point = int(dataset_size * self.train_split)
-    train_indices = indices[:split_point]
-    val_indices = indices[split_point:]
+    train_indices = []
+    val_indices = []
+    current_offset = 0
 
-    # 3. Create Subsets
-    # Subsets are great because they don't copy the data, just the index list
-    self.train_ds = Subset(entire_dataset, train_indices)
-    self.val_ds = Subset(entire_dataset, val_indices)
+    # Iterate through the sorted buckets
+    for d in range(21):
+      count = counts.get(d, 0)
+      if count == 0: continue
+      
+      # Get the range of indices for this specific distance
+      d_indices = np.arange(current_offset, current_offset + count)
+      # Manifold Rule: Stratified 90/10 split
+      np.random.shuffle(d_indices)
+      split = int(count * self.train_split)
+        
+      if d in anchors:
+        # Anchor Rule: 100% to training
+        train_indices.append(d_indices)
+      else:
+        train_indices.append(d_indices[:split])
+
+      #always put the split in validation
+      val_indices.append(d_indices[split:])
+        
+      current_offset += count
+
+    self.train_indices = np.concatenate(train_indices)
+    self.val_indices = np.concatenate(val_indices)
+
+    # Calculate Log-Smoothed weights for the CrossEntropy
+    # Using the counts we saved in metadata
+    c_list = tensor([counts.get(i, 0) for i in range(21)], dtype=float32)
+    self.class_weights = log((c_list.max() / (c_list + 1e-6)) + 1)
+
+    self.train_ds = Subset(entire_dataset, self.train_indices)
+    self.val_ds = Subset(entire_dataset, self.val_indices)
 
   def train_dataloader(self):
     return DataLoader(
@@ -86,7 +112,7 @@ class RubikManager:
     for orbit in tqdm(orbits, desc="Processing Orbits"):
       cube = Cube()
       cube.reset()
-      for i, action in enumerate(orbit, start=1):
+      for i, action in enumerate(orbit[:-1], start=1):
         cube.act(action)
         
         # Current state on path
@@ -111,26 +137,39 @@ class RubikManager:
               if adj_bytes not in contents or new_dist < contents[adj_bytes]:
                 contents[adj_bytes] = new_dist
                 # If you wanted to go even deeper, you'd add to frontier here
-                frontier.append((adj.state, new_dist))
+                if new_dist < 20:
+                  frontier.append((adj.state, new_dist))
 
-    # 2. Finalize to Disk (Memory Mapping)
+    # 2. Calculate Statistics & Sort by Distance
     num_samples = len(contents)
-    print(f"Finalizing {num_samples} samples to SSD...")
+    distance_counts = {}
     
-    # Pre-allocate binary files
+    # Sort the items so distance 0 comes first, then 1, etc.
+    # This creates the "Physical Buckets" on disk
+    sorted_items = sorted(contents.items(), key=lambda x: x[1])
+    
+    # 2. Write to Disk & Count
     inputs_mmap = np.memmap(INPUTS_FILE, dtype='uint8', mode='w+', shape=(num_samples, 54))
     targets_mmap = np.memmap(TARGETS_FILE, dtype='uint8', mode='w+', shape=(num_samples,))
 
-    for idx, (state_bytes, dist) in enumerate(contents.items()):
+    for idx, (state_bytes, dist) in enumerate(sorted_items):
       inputs_mmap[idx] = np.frombuffer(state_bytes, dtype='uint8')
       targets_mmap[idx] = dist
+      distance_counts[dist] = distance_counts.get(dist, 0) + 1
     
     inputs_mmap.flush()
     targets_mmap.flush()
     
-    # Save metadata so we know the size when reloading
-    save({'num_samples': num_samples}, META_FILE)
-    print(f"Done! Data saved to {DATA_DIR}")
+    # 3. Save Metadata with Statistics
+    # We save the 'counts' so we can calculate weights without re-scanning
+    save({
+        'num_samples': num_samples,
+        'counts': distance_counts
+    }, META_FILE)
+    
+    print(f"Done! Distribution: {distance_counts}")
+
+    
 
 class RubikMmapDataset(Dataset):
   """Zero-RAM Dataset that reads directly from disk."""
@@ -172,7 +211,7 @@ if __name__ == "__main__":
 
   # 2. INITIALIZE DATA MODULE
   # Note: Use your actual desired batch_size here, e.g., 1024
-  module = RubikDistanceDataModule(batch_size=1024)
+  module = RubikDistanceDataModule(train_batch_size=6, val_batch_size=1, train_split=0.5)
 
   # 3. MANUAL SETUP
   # This is the line you were missing! 
@@ -186,7 +225,9 @@ if __name__ == "__main__":
   inputs, targets = next(iter(train_loader))
   print("Train batch inputs shape:", inputs.shape)
   print("Train batch targets shape:", targets.shape)
-  print("First target in batch:", targets[0].item())
+  
+  for pair in zip(inputs, targets):
+    print(f"{pair}\n\n")
 
   del train_loader
   del val_loader

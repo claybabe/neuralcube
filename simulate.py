@@ -1,4 +1,4 @@
-# 2025 - copyright - all rights reserved - clayton thomas baber
+# 2026 - copyright - all rights reserved - clayton thomas baber
 
 import asyncio
 import pygame
@@ -12,6 +12,7 @@ from tkinter import Tk, filedialog
 from collections import defaultdict
 
 def pygame_loop(queue, stop_event):
+  global COLOR
   pygame.init()
   clock = pygame.time.Clock()  # Create a clock object
   my_font = pygame.font.SysFont('freesans', 100)
@@ -101,12 +102,17 @@ def pygame_loop(queue, stop_event):
         if event.key == pygame.K_PERIOD:
           if not neuralcube.isSolved():
             stepping = True
-      
+
+        if event.key == pygame.K_z:
+          COLOR += 1
+          if COLOR >= len(Cube.color_rotation):
+            COLOR = 0
+        
     if solving or stepping:
       stepping = False
 
       state = neuralcube.getState()
-      probe =  tensor(neuralcube.getProbe(), dtype=float32)
+      probe =  tensor(neuralcube.getProbe(color=Cube.color_rotation[COLOR]), dtype=float32)
       predictions = model(probe).squeeze()
       choices = argsort(predictions)
       choice = neuralcube.history[state]
@@ -126,22 +132,22 @@ def pygame_loop(queue, stop_event):
     if maxxing > 0:
       maxxing -= 1
       state = neuralcube.getState()
-      probe =  tensor(neuralcube.getProbe(), dtype=float32)
+      probe =  tensor(neuralcube.getProbe(color=Cube.color_rotation[COLOR]), dtype=float32)
       predictions = model(probe).squeeze()
       choices = argsort(predictions)
       action = choices[-1]
       neuralcube.act(action)
 
 
-    result = neuralcube.toOneHot()
+    result = neuralcube.toOneHot(Cube.color_rotation[COLOR])
     result = tensor(result, dtype=float32)
     result = model(result).detach()
-    result = round(float(result) / len(model.models)* 1000)
+    result = float(result)
     result = str(result)
 
     image = pygame.Surface.copy(original_image)
     pixel_array = pygame.PixelArray(image)
-    lookup = neuralcube.toColorHot(L=248)
+    lookup = neuralcube.toColorHot(color=Cube.color_rotation[COLOR], L=248)
 
     for sticker, chroma in enumerate(range(10, 64)):
       color_to_replace = (chroma, chroma, chroma)  
@@ -183,6 +189,7 @@ def resource_path(relative_path):
 
 if __name__ == "__main__":
   
+  COLOR = 1
   neuralcube = Cube()
   neuralcube.history = defaultdict(int)
 
@@ -190,7 +197,7 @@ if __name__ == "__main__":
 
   model_paths = []
   for _ in range(int(input("number of models? "))):
-    model_path = filedialog.askopenfilename(initialdir="lightning_logs")
+    model_path = filedialog.askopenfilename(initialdir="checkpoints")
     model_paths.append(model_path)
   
   model = RubikEnsemble(model_paths)
