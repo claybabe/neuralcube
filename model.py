@@ -181,29 +181,32 @@ class RubikDistancePredictor(LightningModule):
 
 class RubikEnsemble:
   def __init__(self, model_paths, device="cpu"):
+    self.device = device
     self.models = []
     for path in model_paths:
       m = RubikDistancePredictor.load_from_checkpoint(path, map_location=device, strict=False)
       m.eval()
       self.models.append(m)
+    
+    num_classes = self.models[0].hparams.num_classes
+    # Create the distance vector: [0.0, 1.0, 2.0, ..., num_classes.0]
+    # We use register_buffer or just a tensor here to multiply against the probs
+    self.distances = torch.arange(num_classes, device=device).float()
     print(f"Ensemble loaded with {len(self.models)} models.")
 
   def __call__(self, x):
     with torch.no_grad():
       preds = torch.stack([m(x) for m in self.models])
       avg_probs = torch.mean(preds, dim=0)
-      #return avg_probs
-      #hack until evaluate.py update
-      max_probs, argmaxes = torch.max(avg_probs, dim=-1)
-      decimal = 1.0 - max_probs
-      return argmaxes.float() + decimal
+      expected_value = (avg_probs * self.distances).sum(dim=-1)
+      return expected_value
 
 if __name__ == "__main__":
   # 0. generate data
   manager = RubikManager()
   manager.generate_dataset(Cube.orbits, deep_layers=2)
   
-  for MAXLR in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]:
+  for MAXLR in [0.99, 0.88, 0.77]:
 
     # 1. Initialize Datamodule
     datamodule = RubikDistanceDataModule(train_batch_size=256, val_batch_size=24795, train_split=0.98)
@@ -237,7 +240,7 @@ if __name__ == "__main__":
       schedule_lr=schedule_lr,
       augment=True,
       class_weights=datamodule.class_weights,
-      grad_clip=1.5
+      grad_clip=5
     )
 
     # 5. Hire a Trainer

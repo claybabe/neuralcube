@@ -52,9 +52,7 @@ class RubikDistanceDataModule(LightningDataModule):
         train_indices.append(d_indices)
       else:
         train_indices.append(d_indices[:split])
-
-      #always put the split in validation
-      val_indices.append(d_indices[split:])
+        val_indices.append(d_indices[split:])
         
       current_offset += count
 

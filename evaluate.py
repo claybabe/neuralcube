@@ -1,4 +1,4 @@
-# 2025 - copyright - all rights reserved - clayton thomas baber
+# 2026 - copyright - all rights reserved - clayton thomas baber
 
 from time import time
 from tqdm import tqdm
@@ -14,7 +14,7 @@ if __name__ == "__main__":
   
   model_paths = []
   for _ in range(int(input("number of models? "))):
-    model_path = filedialog.askopenfilename(initialdir="lightning_logs")
+    model_path = filedialog.askopenfilename(initialdir="checkpoints")
     model_paths.append(model_path)
   
   model = RubikEnsemble(model_paths)

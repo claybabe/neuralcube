@@ -13,6 +13,7 @@ from collections import defaultdict
 
 def pygame_loop(queue, stop_event):
   global COLOR
+  global ORBIT
   pygame.init()
   clock = pygame.time.Clock()  # Create a clock object
   my_font = pygame.font.SysFont('freesans', 100)
@@ -108,6 +109,19 @@ def pygame_loop(queue, stop_event):
           if COLOR >= len(Cube.color_rotation):
             COLOR = 0
         
+        if event.key == pygame.K_x:
+          neuralcube.reset()
+          neuralcube.history = defaultdict(int)
+          neuralcube.algo(Cube.orbits[ORBIT])
+        
+        if event.key == pygame.K_c:
+          ORBIT += 1
+          if ORBIT >= len(Cube.orbits):
+            ORBIT = 0
+          neuralcube.reset()
+          neuralcube.history = defaultdict(int)
+          neuralcube.algo(Cube.orbits[ORBIT])
+        
     if solving or stepping:
       stepping = False
 
@@ -189,11 +203,12 @@ def resource_path(relative_path):
 
 if __name__ == "__main__":
   
-  COLOR = 1
+  COLOR = 0
+  ORBIT = 0
   neuralcube = Cube()
   neuralcube.history = defaultdict(int)
 
-  neuralcube.algo(Cube.orbits[1337])
+  neuralcube.algo(Cube.orbits[ORBIT])
 
   model_paths = []
   for _ in range(int(input("number of models? "))):
