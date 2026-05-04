@@ -27,6 +27,9 @@ class RubikDistancePredictor(LightningModule):
     super().__init__()
     self.save_hyperparameters()
 
+    self.clipping_history = []
+    self.window_size = 100
+    
     self.total_epochs = sum(stage[1] for stage in schedule_lr)
     self.steps_per_epoch = int(np.ceil(train_ds_size / batch_size))
     self.total_steps = self.total_epochs * self.steps_per_epoch
@@ -81,7 +84,10 @@ class RubikDistancePredictor(LightningModule):
 
     logits = self(x)
     loss = self.loss_fn(logits, y.long())
-    
+    # Check for numerical instability
+    if torch.isnan(loss) or torch.isinf(loss):
+        # We raise an error here so the main loop can catch it and empty_cache()
+        raise ValueError(f"Numerical instability detected: loss is {loss.item()}")
     self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
     return loss
 
@@ -154,10 +160,6 @@ class RubikDistancePredictor(LightningModule):
     }
 
   def on_before_optimizer_step(self, optimizer):
-    # Calculate and log the L2 norm (2-norm) of gradients
-    norms = grad_norm(self, norm_type=2)
-    self.log_dict(norms)
-
     # Calculate the total L2 norm
     total_norm = 0.0
     for p in self.parameters():
@@ -168,16 +170,19 @@ class RubikDistancePredictor(LightningModule):
     # This ** 0.5 is the Square Root (Math)
     total_norm = total_norm ** 0.5
 
-    # Log the raw norm
-    self.log('grad/total_norm', total_norm, on_step=True)
-    
-    # Log the clip threshold from your hparams (Logic)
-    # This ensures your log matches what the Trainer is actually doing
-    self.log('grad/clip_threshold', self.hparams.grad_clip, on_step=True)
-    
-    # Log how many times the norm exceeded the threshold
     was_clipped = 1.0 if total_norm > self.hparams.grad_clip else 0.0
-    self.log('grad/was_clipped_flag', was_clipped, on_step=True)
+    
+    # Maintain a rolling window for a frequency metric
+    self.clipping_history.append(was_clipped)
+    if len(self.clipping_history) > self.window_size:
+        self.clipping_history.pop(0)
+    
+    # Log the frequency (0.0 to 1.0)
+    clipping_freq = sum(self.clipping_history) / len(self.clipping_history)
+    
+    # This will now look like a "heat map" of how much the model is struggling
+    self.log('grad/clipping_frequency', clipping_freq, on_step=True, prog_bar=False)
+    self.log('grad/total_norm', total_norm, on_step=True)
 
 class RubikEnsemble:
   def __init__(self, model_paths, device="cpu"):
@@ -206,7 +211,17 @@ if __name__ == "__main__":
   manager = RubikManager()
   manager.generate_dataset(Cube.orbits, deep_layers=2)
   
-  for MAXLR in [0.99, 0.88, 0.77]:
+  # --- SIGNAL HANDLER SETUP ---
+  import signal
+  def manual_skip_handler(signum, frame):
+      # This will be caught by your 'except Exception as e' block below
+      raise ValueError("Manual skip signal received.")
+
+  # Register the listener
+  signal.signal(signal.SIGUSR1, manual_skip_handler)
+  # ----------------------------
+
+  for MAXLR in [7, 6, 5, 4, 3, 2]:
 
     # 1. Initialize Datamodule
     datamodule = RubikDistanceDataModule(train_batch_size=256, val_batch_size=24795, train_split=0.98)
@@ -226,7 +241,7 @@ if __name__ == "__main__":
       monitor='val_acc',        # We want the highest accuracy
       dirpath='checkpoints/',    # Where to save
       filename='rubik-{epoch:02d}-{val_acc:.4f}',
-      save_top_k=3,             # Keep the best 3 models
+      #save_top_k=3,             # Keep the best 3 models
       mode='max',               # 'max' because higher val_acc is better
       save_last=True            # Always keep 'last.ckpt' for easy resuming
     )
@@ -250,18 +265,13 @@ if __name__ == "__main__":
       accelerator="gpu",
       callbacks=[lr_monitor, checkpoint_callback],
       precision="16-mixed",
-      # gradient_clip_val helps prevent the NaN before it happens
-      gradient_clip_val=model.hparams.grad_clip, 
+      gradient_clip_val=model.hparams.grad_clip,
     )
     
-    print(f"\n--- Testing MAXLR: {MAXLR} ---")
     try:
         trainer.fit(model, datamodule)
     except Exception as e:
-        # Catching the exception (like NaN loss or exploding gradients)
-        # and moving to the next iteration
-        print(f"Skipping MAXLR {MAXLR} due to training instability: {e}")
-        
+        print(f"Skipping Current Run: {e}")
         # Crucial: Clean up GPU memory before starting the next run
         empty_cache()
         continue
