@@ -12,7 +12,6 @@ from tkinter import Tk, filedialog
 from collections import defaultdict
 
 def pygame_loop(queue, stop_event):
-  global COLOR
   global ORBIT
   pygame.init()
   clock = pygame.time.Clock()  # Create a clock object
@@ -50,43 +49,58 @@ def pygame_loop(queue, stop_event):
         if event.key == pygame.K_ESCAPE:
           running = False
           stop_event.set()
-        if event.key == pygame.K_1:
-          neuralcube.act(0)
-        if event.key == pygame.K_2:
-          neuralcube.act(1)
-        if event.key == pygame.K_3:
-          neuralcube.act(2)
-        if event.key == pygame.K_4:
-          neuralcube.act(3)
-        if event.key == pygame.K_5:
-          neuralcube.act(4)
-        if event.key == pygame.K_6:
-          neuralcube.act(5)
-        if event.key == pygame.K_7:
-          neuralcube.act(6)
-        if event.key == pygame.K_8:
-          neuralcube.act(7)
-        if event.key == pygame.K_9:
-          neuralcube.act(8)
         if event.key == pygame.K_q:
-          neuralcube.act(9)
+          neuralcube.act(0)
+        if event.key == pygame.K_a:
+          neuralcube.act(1)
+        if event.key == pygame.K_z:
+          neuralcube.act(2)
         if event.key == pygame.K_w:
-          neuralcube.act(10)
+          neuralcube.act(3)
+        if event.key == pygame.K_s:
+          neuralcube.act(4)
+        if event.key == pygame.K_x:
+          neuralcube.act(5)
         if event.key == pygame.K_e:
-          neuralcube.act(11)
+          neuralcube.act(6)
+        if event.key == pygame.K_d:
+          neuralcube.act(7)
+        if event.key == pygame.K_c:
+          neuralcube.act(8)
         if event.key == pygame.K_r:
-          neuralcube.act(12)
+          neuralcube.act(9)
+        if event.key == pygame.K_f:
+          neuralcube.act(10)
+        if event.key == pygame.K_v:
+          neuralcube.act(11)
         if event.key == pygame.K_t:
+          neuralcube.act(12)
+        if event.key == pygame.K_g:
           neuralcube.act(13)
-        if event.key == pygame.K_y:
-          neuralcube.act(14)
-        if event.key == pygame.K_u:
-          neuralcube.act(15)
-        if event.key == pygame.K_i:
-          neuralcube.act(16)
-        if event.key == pygame.K_o:
-          neuralcube.act(17)
         if event.key == pygame.K_b:
+          neuralcube.act(14)
+        if event.key == pygame.K_y:
+          neuralcube.act(15)
+        if event.key == pygame.K_h:
+          neuralcube.act(16)
+        if event.key == pygame.K_n:
+          neuralcube.act(17)
+
+        if event.key == pygame.K_u:
+          neuralcube.rotate(1)
+        if event.key == pygame.K_j:
+          neuralcube.rotate(2)
+        if event.key == pygame.K_i:
+          neuralcube.rotate(3)
+        if event.key == pygame.K_k:
+          neuralcube.rotate(4)
+        if event.key == pygame.K_o:
+          neuralcube.rotate(5)
+        if event.key == pygame.K_l:
+          neuralcube.rotate(6)
+
+
+        if event.key == pygame.K_1:
           maxxing = 1
         if event.key == pygame.K_HOME:
           neuralcube.reset()
@@ -104,17 +118,13 @@ def pygame_loop(queue, stop_event):
           if not neuralcube.isSolved():
             stepping = True
 
-        if event.key == pygame.K_z:
-          COLOR += 1
-          if COLOR >= len(Cube.color_rotation):
-            COLOR = 0
         
-        if event.key == pygame.K_x:
+        if event.key == pygame.K_2:
           neuralcube.reset()
           neuralcube.history = defaultdict(int)
           neuralcube.algo(Cube.orbits[ORBIT])
         
-        if event.key == pygame.K_c:
+        if event.key == pygame.K_3:
           ORBIT += 1
           if ORBIT >= len(Cube.orbits):
             ORBIT = 0
@@ -126,7 +136,7 @@ def pygame_loop(queue, stop_event):
       stepping = False
 
       state = neuralcube.getState()
-      probe =  tensor(neuralcube.getProbe(color=Cube.color_rotation[COLOR]), dtype=float32)
+      probe =  tensor(neuralcube.getProbe(), dtype=float32)
       predictions = model(probe).squeeze()
       choices = argsort(predictions)
       choice = neuralcube.history[state]
@@ -146,22 +156,22 @@ def pygame_loop(queue, stop_event):
     if maxxing > 0:
       maxxing -= 1
       state = neuralcube.getState()
-      probe =  tensor(neuralcube.getProbe(color=Cube.color_rotation[COLOR]), dtype=float32)
+      probe =  tensor(neuralcube.getProbe(), dtype=float32)
       predictions = model(probe).squeeze()
       choices = argsort(predictions)
       action = choices[-1]
       neuralcube.act(action)
 
 
-    result = neuralcube.toOneHot(Cube.color_rotation[COLOR])
+    result = neuralcube.toOneHot()
     result = tensor(result, dtype=float32)
-    result = model(result).detach()
+    result = model(result).detach().squeeze() # Remove the batch dimension
     result = float(result)
     result = str(result)
 
     image = pygame.Surface.copy(original_image)
     pixel_array = pygame.PixelArray(image)
-    lookup = neuralcube.toColorHot(color=Cube.color_rotation[COLOR], L=248)
+    lookup = neuralcube.toColorHot(L=248)
 
     for sticker, chroma in enumerate(range(10, 64)):
       color_to_replace = (chroma, chroma, chroma)  
@@ -203,7 +213,6 @@ def resource_path(relative_path):
 
 if __name__ == "__main__":
   
-  COLOR = 0
   ORBIT = 0
   neuralcube = Cube()
   neuralcube.history = defaultdict(int)

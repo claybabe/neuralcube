@@ -1,13 +1,13 @@
 # 2026 - copyright - all rights reserved - clayton thomas baber
 
 import torch
+import torch.nn.functional as F
 from torch.nn import Linear, Sequential, ReLU, CrossEntropyLoss
 from torch.optim import SGD
 from torch.optim.lr_scheduler import LambdaLR
 from torch.cuda import empty_cache
 from pytorch_lightning import Trainer, LightningModule
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from pytorch_lightning.utilities import grad_norm
 from dataset import RubikDistanceDataModule, RubikManager
 from cube import Cube
 import numpy as np
@@ -21,8 +21,9 @@ class RubikDistancePredictor(LightningModule):
                schedule_lr=[(0.03, 5), (0.02, 2), (0.02, 40), (0.0001, 50)],
                augment=False,
                num_classes=21,
-               class_weights = None,
+               class_weights=None,
                grad_clip=0.5,
+               consistency_weight=None  # Default to None for legacy compatibility
                ):
     super().__init__()
     self.save_hyperparameters()
@@ -33,93 +34,127 @@ class RubikDistancePredictor(LightningModule):
     self.total_epochs = sum(stage[1] for stage in schedule_lr)
     self.steps_per_epoch = int(np.ceil(train_ds_size / batch_size))
     self.total_steps = self.total_epochs * self.steps_per_epoch
-    
-    print(f"--- SCHEDULE INITIALIZED ---")
-    print(f"Total Run Time: {self.total_epochs} Epochs")
-    print(f"Total Steps:    {self.total_steps}")
-    print(f"Starting LR:    {self.hparams.start_lr}")
-    print(f"Schedule:       {self.hparams.schedule_lr}")
 
     self.network = Sequential(
       Linear(324, self.hparams.hidden_dim), ReLU(),
       Linear(self.hparams.hidden_dim, self.hparams.hidden_dim // 2), ReLU(),
       Linear(self.hparams.hidden_dim // 2, self.hparams.num_classes) 
     )
+    
     self.register_buffer('loss_weights', self.hparams.class_weights)
     self.loss_fn = CrossEntropyLoss(weight=self.loss_weights)
 
-    self.register_buffer('all_color_perms', torch.tensor(Cube.color_rotation, dtype=torch.long))
+    # Prepare 24 permutations
+    self.register_buffer('rotation_perms', torch.tensor(Cube.rotations, dtype=torch.long))
 
-  def forward(self, x):
-    logits = self.network(x)
-    
-    if self.training:
-      return logits
-    else:
-      return torch.softmax(logits, dim=-1)
-    
+  def _apply_rotations(self, x):
+    if x.dim() == 1:
+      x = x.unsqueeze(0)
+    batch_size = x.size(0)
+    x_reshaped = x.view(batch_size, 54, 6)
+    x_expanded = x_reshaped.unsqueeze(1).expand(-1, 24, -1, -1)
+    idx = self.rotation_perms.unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, 6)
+    x_aug = torch.gather(x_expanded, 2, idx)
+    return x_aug.reshape(-1, 324)
+
+  def forward(self, x, return_aug=False):
+    c_weight = self.hparams.get('consistency_weight', None)
+    is_legacy = c_weight is None or c_weight == 0
+
+    # Ensure we have a batch dimension [Batch, 324]
+    # This prevents simulate.py from breaking if it passes a flat [324] tensor
+    if x.dim() == 1:
+        x = x.unsqueeze(0)
+
+    # Training logic remains the same (handles training batch size)
+    if self.training or return_aug:
+      x_all = self._apply_rotations(x)
+      logits_all = self.network(x_all)
+      if return_aug:
+        return logits_all.view(-1, 24, self.hparams.num_classes)
+      return logits_all
+
+    # Inference/Validation logic with Memory Management
+    with torch.no_grad():
+      if is_legacy or not self.hparams.augment:
+        logits = self.network(x)
+        return torch.softmax(logits, dim=-1)
+
+      # For large validation batches, we process one cube at a time or in small chunks
+      # to prevent the 24x multiplier from triggering an OOM
+      all_avg_probs = []
+      
+      # Process in small chunks (e.g., 128 cubes at a time)
+      chunk_size = 128
+      for i in range(0, x.size(0), chunk_size):
+        x_chunk = x[i : i + chunk_size]
+        x_all = self._apply_rotations(x_chunk)
+        logits_all = self.network(x_all)
+        logits_reshaped = logits_all.view(-1, 24, self.hparams.num_classes)
+        avg_probs = torch.softmax(logits_reshaped, dim=-1).mean(dim=1)
+        all_avg_probs.append(avg_probs)
+      
+      return torch.cat(all_avg_probs, dim=0)
+
   def training_step(self, batch, batch_idx):
-    x, y = batch # x: [batch, 324]
+    x, y = batch
+    c_weight = self.hparams.get('consistency_weight', 0) or 0
     
     if self.hparams.augment:
-        n = 24  # All physical rotations
-        batch_size = x.size(0)
+      # 1. Forward pass (Batch x 24)
+      logits_aug = self.forward(x, return_aug=True)
+      
+      # 2. Stability Fix: Use Log-Softmax directly
+      log_probs = F.log_softmax(logits_aug, dim=-1)
+      
+      # 3. Supervision Loss: Only calculate on the flattened view
+      y_expanded = y.unsqueeze(1).repeat(1, 24).view(-1).long()
+      sup_loss = F.cross_entropy(logits_aug.view(-1, self.hparams.num_classes), y_expanded, weight=self.loss_weights)
 
-        # 1. Expand the inputs and labels: [batch * 24, 54, 6]
-        # repeat_interleave ensures: [Sample1, Sample1... (24x), Sample2, Sample2... (24x)]
-        x_aug = x.view(-1, 54, 6).repeat_interleave(n, dim=0)
-        y = y.repeat_interleave(n, dim=0)
+      # 4. Consistency Loss: Prevent log(0) and NaNs
+      with torch.no_grad():
+        # We target the average probability across orientations
+        target_probs = torch.softmax(logits_aug, dim=-1).mean(dim=1).detach()
+        # Add epsilon to prevent log(0) if model is perfectly confident
+        target_probs = target_probs.clamp(min=1e-7)
 
-        # 2. Prepare the permutation indices for the expanded batch
-        # This repeats the 24-perm block for every sample in the batch
-        # Shape: [batch * 24, 6]
-        selected_perms = self.all_color_perms.repeat(batch_size, 1)
-        
-        # 3. Create the gather index: [batch * 24, 54, 6]
-        # We need to expand [batch*24, 6] -> [batch*24, 54, 6]
-        gather_idx = selected_perms.unsqueeze(1).expand(-1, 54, -1)
+      # KL Div using log_probs we already calculated
+      consistency_loss = F.kl_div(
+        log_probs, 
+        target_probs.unsqueeze(1).expand_as(log_probs), 
+        reduction='batchmean'
+      )
+      
+      loss = sup_loss + (c_weight * consistency_loss)
+    else:
+      # Standard non-augmented path
+      logits = self.network(x)
+      loss = F.cross_entropy(logits, y.long())
 
-        # 4. Apply the rotation across the color dimension and flatten
-        x = torch.gather(x_aug, 2, gather_idx).reshape(-1, 324)
-
-    logits = self(x)
-    loss = self.loss_fn(logits, y.long())
-    # Check for numerical instability
-    if torch.isnan(loss) or torch.isinf(loss):
-        # We raise an error here so the main loop can catch it and empty_cache()
-        raise ValueError(f"Numerical instability detected: loss is {loss.item()}")
-    self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+    self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)  
     return loss
 
   def validation_step(self, batch, batch_idx):
     x, y = batch
-    y = torch.clamp(y.long(), 0, self.hparams.num_classes - 1)
+    y_long = torch.clamp(y.long(), 0, self.hparams.num_classes - 1)
     
-    # Get raw logits for loss, then softmax for metrics
-    logits = self.network(x)
-    probs = torch.softmax(logits, dim=-1) # shape: [batch, 21]
+    # Validation uses the 'Consensus' forward pass (average of 24 rotations)
+    probs = self.forward(x) 
     
-    # 1. Standard Loss (CrossEntropy)
-    val_loss = self.loss_fn(logits, y)
+    # CrossEntropy from probabilities (using log for safety)
+    val_loss = F.nll_loss(torch.log(probs + 1e-9), y_long)
     
-    # 2. Hard Accuracy (Did we pick the exact move?)
-    preds = torch.argmax(logits, dim=-1)
-    acc = (preds == y).float().mean()
+    preds = torch.argmax(probs, dim=-1)
+    acc = (preds == y_long).float().mean()
     
-    # 3. Expected Value (EV) Calculation
-    # Create a vector of distances: [0, 1, 2, ..., 20]
     distances = torch.arange(self.hparams.num_classes, device=self.device).float()
-    
-    # Batch dot product: sum(probs * distances)
     expected_distances = (probs * distances).sum(dim=-1)
-    
-    # EV Error: How far is our "average" guess from the target?
     ev_error = torch.abs(expected_distances - y.float()).mean()
     
     self.log('val_loss', val_loss, on_epoch=True, prog_bar=True)
     self.log('val_acc', acc, on_epoch=True, prog_bar=True)
     self.log('val_ev_error', ev_error, on_epoch=True, prog_bar=True)
-    
+
     return val_loss
 
   def configure_optimizers(self):
@@ -221,7 +256,7 @@ if __name__ == "__main__":
   signal.signal(signal.SIGUSR1, manual_skip_handler)
   # ----------------------------
 
-  for MAXLR in [7, 6, 5, 4, 3, 2]:
+  for MAXLR in [1.2, 1.1, 1.0, 0.9, 0.8, 0.7]:
 
     # 1. Initialize Datamodule
     datamodule = RubikDistanceDataModule(train_batch_size=256, val_batch_size=24795, train_split=0.98)
@@ -255,7 +290,8 @@ if __name__ == "__main__":
       schedule_lr=schedule_lr,
       augment=True,
       class_weights=datamodule.class_weights,
-      grad_clip=5
+      grad_clip=5,
+      consistency_weight=3,
     )
 
     # 5. Hire a Trainer
