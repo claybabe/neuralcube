@@ -244,7 +244,7 @@ class RubikEnsemble:
 if __name__ == "__main__":
   # 0. generate data
   manager = RubikManager()
-  manager.generate_dataset(Cube.orbits, deep_layers=2)
+  manager.generate_dataset(Cube.orbits, deep_layers=3)
   
   # --- SIGNAL HANDLER SETUP ---
   import signal
@@ -291,7 +291,7 @@ if __name__ == "__main__":
       augment=True,
       class_weights=datamodule.class_weights,
       grad_clip=5,
-      consistency_weight=3,
+      consistency_weight=0.3,
     )
 
     # 5. Hire a Trainer
