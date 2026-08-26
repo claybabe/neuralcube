@@ -1,7 +1,7 @@
 # 2026 - copyright - all rights reserved - clayton thomas baber
 
 class Cube():
-  solved = tuple([*range(54)])
+  solved = tuple(range(54))
   antiaction = (2, 1, 0, 5, 4, 3, 8, 7, 6, 11, 10, 9, 14, 13, 12, 17, 16, 15)
   actions = (
   (42,1,2,43,4,5,44,7,8,0,10,11,3,13,14,6,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,9,12,15,36,37,38,39,40,41,33,34,35,51,48,45,52,49,46,53,50,47),
@@ -1407,15 +1407,6 @@ if __name__ == "__main__":
   
   cube = Cube()
 
-  for i in range(24):
-    print(cube)
-    cube.rotate(1)
-  print(cube)
-  
-
-  exit()
-
-  print("\nPerforming tests...\n")
   
   #cycle test
   cube, good, bad, verify, negate = Cube(), 0, 0, (
