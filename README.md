@@ -2,8 +2,8 @@
 
 neural simulations of rubik's cube
 
-## Debian 12
-install prereqs `sudo apt install git python3.11-venv python3-tk`
+## Debian 13
+install prereqs `sudo apt install git python3-venv python3-tk`
 
 clone repo `git clone https://github.com/claybabe/neuralcube`
 
@@ -26,7 +26,9 @@ evaluate ensembles `python evaluate.py`
 interactive visual simulation `python simulate.py`
 
 
-123 456 789 qwe rty uio - perform single action
+qaz wsx edc rfv tgb yhn - perform single action
+
+uj ik ol                - rotate the entire cube
 
 Home                    - stop solve and reset
 
@@ -36,6 +38,10 @@ Enter                   - start solve attempt
 
 . (period)              - single step of solve
 
-b                       - single step to largest probed distance
+1                       - single step to largest probed distance
+
+2                       - go to endpoint of path
+
+3                       - increment to next endpoint
 
 
