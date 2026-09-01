@@ -89,15 +89,15 @@ def pygame_loop(queue, stop_event):
         if event.key == pygame.K_u:
           neuralcube.rotate(1)
         if event.key == pygame.K_j:
-          neuralcube.rotate(2)
-        if event.key == pygame.K_i:
           neuralcube.rotate(3)
-        if event.key == pygame.K_k:
+        if event.key == pygame.K_i:
           neuralcube.rotate(4)
-        if event.key == pygame.K_o:
-          neuralcube.rotate(5)
-        if event.key == pygame.K_l:
+        if event.key == pygame.K_k:
           neuralcube.rotate(6)
+        if event.key == pygame.K_o:
+          neuralcube.rotate(7)
+        if event.key == pygame.K_l:
+          neuralcube.rotate(9)
 
 
         if event.key == pygame.K_1:
