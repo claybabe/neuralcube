@@ -8,7 +8,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.cuda import empty_cache
 from pytorch_lightning import Trainer, LightningModule
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from dataset import RubikDistanceDataModule, RubikManager
+from dataset import RubikDistanceDataModule, RubikManager, PathDatasetProcessor
 from cube import Cube
 import numpy as np
 
@@ -225,6 +225,7 @@ class RubikEnsemble:
     self.models = []
     for path in model_paths:
       m = RubikDistancePredictor.load_from_checkpoint(path, map_location=device, strict=False)
+      print(m.hparams)
       m.eval()
       self.models.append(m)
     
@@ -243,8 +244,12 @@ class RubikEnsemble:
 
 if __name__ == "__main__":
   # 0. generate data
+
+  pdp = PathDatasetProcessor("htm4.txt", 4, max_shared_prefix=6)
+  paths = pdp.get_paths()
+
   manager = RubikManager()
-  manager.generate_dataset(Cube.orbits, deep_layers=3)
+  manager.generate_dataset(paths, deep_layers=2)
   
   # --- SIGNAL HANDLER SETUP ---
   import signal
