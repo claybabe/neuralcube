@@ -50,7 +50,7 @@ Enter                   - start solve attempt
 
 This project utilizes dataset assets generated during the God's Number is 20 computational proof:
 
-    Dataset: htm4.zip (4-move Half-Turn Metric positions)
+    Dataset: htm4.zip (20-move Half-Turn Metric positions)
 
     Credits: Tomas Rokicki, Herbert Kociemba, Morley Davidson, and John Dethridge
 
