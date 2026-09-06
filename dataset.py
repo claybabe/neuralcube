@@ -246,7 +246,7 @@ class PathDatasetProcessor:
     def _load_dataset(self, filepath: str) -> np.ndarray:
         parsed_paths = []
 
-        def _parse_stream(stream, pbar_desc="[1/7] Parsing dataset lines"):
+        def _parse_stream(stream, pbar_desc):
             for line in tqdm(stream, desc=pbar_desc, unit="lines"):
                 line = line.strip()
                 if not line:
@@ -263,7 +263,11 @@ class PathDatasetProcessor:
 
                 with zf.open(target_filename, 'r') as f:
                     text_stream = io.TextIOWrapper(f, encoding='utf-8')
-                    _parse_stream(text_stream, pbar_desc=f"[1/7] Unzipping & parsing '{target_filename}'")
+                    if self is None:
+                       step = ""
+                    else:
+                       step = "[1/7] "
+                    _parse_stream(text_stream, pbar_desc=f"{step}Unzipping & parsing '{target_filename}'")
         else:
             with open(filepath, 'r', encoding='utf-8') as f:
                 _parse_stream(f)

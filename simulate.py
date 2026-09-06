@@ -7,12 +7,14 @@ import sys
 import os
 from cube import Cube
 from model import RubikDistancePredictor, RubikEnsemble
+from dataset import PathDatasetProcessor
 from torch import tensor, argsort, float32
 from tkinter import Tk, filedialog
 from collections import defaultdict
+from tqdm import tqdm
 
 def pygame_loop(queue, stop_event):
-  global ORBIT
+  global ENDPOINTS, ENDPOINT
   pygame.init()
   clock = pygame.time.Clock()  # Create a clock object
   my_font = pygame.font.SysFont('freesans', 100)
@@ -122,15 +124,15 @@ def pygame_loop(queue, stop_event):
         if event.key == pygame.K_2:
           neuralcube.reset()
           neuralcube.history = defaultdict(int)
-          neuralcube.algo(Cube.orbits[ORBIT])
+          neuralcube.setState(ENDPOINTS[ENDPOINT])
         
         if event.key == pygame.K_3:
-          ORBIT += 1
-          if ORBIT >= len(Cube.orbits):
-            ORBIT = 0
+          ENDPOINT += 1
+          if ENDPOINT >= len(ENDPOINTS):
+            ENDPOINT = 0
           neuralcube.reset()
           neuralcube.history = defaultdict(int)
-          neuralcube.algo(Cube.orbits[ORBIT])
+          neuralcube.setState(ENDPOINTS[ENDPOINT])
         
     if solving or stepping:
       stepping = False
@@ -138,6 +140,15 @@ def pygame_loop(queue, stop_event):
       state = neuralcube.getState()
       probe =  tensor(neuralcube.getProbe(), dtype=float32)
       predictions = model(probe).squeeze()
+      # --- QUICK & DIRTY SOLVE-CHECK OVERRIDE ---
+      # Check all 18 one-turn child states directly
+      for move_idx in range(18):
+        child = Cube(neuralcube)
+        child.act(move_idx)
+        if child.isSolved():
+          # Override model distance with 0.0 for the winning move
+          predictions[move_idx] = 0.0
+      # ------------------------------------------
       choices = argsort(predictions)
       choice = neuralcube.history[state]
 
@@ -163,11 +174,13 @@ def pygame_loop(queue, stop_event):
       neuralcube.act(action)
 
 
-    result = neuralcube.toOneHot()
-    result = tensor(result, dtype=float32)
-    result = model(result).detach().squeeze() # Remove the batch dimension
-    result = float(result)
-    result = str(result)
+    if neuralcube.isSolved():
+      result = "0.0"
+    else:
+      result = neuralcube.toOneHot()
+      result = tensor(result, dtype=float32)
+      result = model(result).detach().squeeze() # Remove the batch dimension
+      result = str(float(result))
 
     image = pygame.Surface.copy(original_image)
     pixel_array = pygame.PixelArray(image)
@@ -213,11 +226,23 @@ def resource_path(relative_path):
 
 if __name__ == "__main__":
   
-  ORBIT = 0
+  paths = PathDatasetProcessor._load_dataset(None, filepath = "assets/htm4.zip")
+  paths = paths.tolist()
+  ENDPOINTS = []
+  with tqdm(total=len(paths), desc="Finding Endpoints", leave=True) as pbar:
+    for path in paths:
+      cube = Cube()
+      for action in path:
+        cube.act(action)
+      ENDPOINTS.append(cube.getState())
+      pbar.update(1)
+    pbar.set_postfix({"Total Endpoints": len(ENDPOINTS)})
+
+  ENDPOINT = 0
   neuralcube = Cube()
   neuralcube.history = defaultdict(int)
 
-  neuralcube.algo(Cube.orbits[ORBIT])
+  neuralcube.setState(ENDPOINTS[ENDPOINT])
 
   model_paths = []
   for _ in range(int(input("number of models? "))):
