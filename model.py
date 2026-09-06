@@ -245,7 +245,7 @@ class RubikEnsemble:
 if __name__ == "__main__":
   # 0. generate data
 
-  pdp = PathDatasetProcessor("htm4.txt", 4, max_shared_prefix=6)
+  pdp = PathDatasetProcessor("assets/htm4.zip", start_idx="random", num_select=16, shift_offsets=[0, 4, 8, 12, 16], max_shared_prefix=5)
   paths = pdp.get_paths()
 
   manager = RubikManager()

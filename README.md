@@ -45,3 +45,15 @@ Enter                   - start solve attempt
 3                       - increment to next endpoint
 
 
+
+# Acknowledgments & Data Credits
+
+This project utilizes dataset assets generated during the God's Number is 20 computational proof:
+
+    Dataset: htm4.zip (4-move Half-Turn Metric positions)
+
+    Credits: Tomas Rokicki, Herbert Kociemba, Morley Davidson, and John Dethridge
+
+    Source: Cube20.org
+
+We are deeply grateful to Tomas Rokicki and the Cube20 team for making these fundamental combinatorial assets available to the Rubik's Cube research community.

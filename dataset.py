@@ -8,6 +8,8 @@ from pytorch_lightning import LightningDataModule
 from cube import Cube
 import numpy as np
 from collections import deque
+import io
+import zipfile
 
 # --- CONFIGURATION ---
 DATA_DIR = "precomputed_rubiks_data"
@@ -209,9 +211,12 @@ class PathDatasetProcessor:
         max_shared_prefix: int = 3, 
         prefix_decay: float = 0.85,
         start_idx: int | str = "random",
-        random_seed: int | None = None
+        random_seed: int | None = None,
+        shift_offsets: list[int] | None = None
     ):
+        print(f"--- Initializing PathDatasetProcessor ({os.path.basename(filepath)}) ---")
         self.paths = self._load_dataset(filepath)
+        
         self.paths = self._filter_trie_prefixes(self.paths, max_shared_prefix)
         
         # Pass seed config to FPS
@@ -223,30 +228,53 @@ class PathDatasetProcessor:
             random_seed=random_seed
         )
         
-        self.paths = self._generate_cyclic_shifts(self.paths)
+        self.paths = self._generate_cyclic_shifts(self.paths, shift_offsets=shift_offsets)
         self.paths = self._expand_with_reversed_antiactions(self.paths)
         
         rotation_table = self._build_action_rotation_table()
         self.paths = self._expand_paths_with_rotations(self.paths, rotation_table)
-        self.paths = np.unique(self.paths, axis=0)
+        
+        # Deduplication step with status
+        with tqdm(total=1, desc="[7/7] Deduplicating paths", leave=True) as pbar:
+            before_len = len(self.paths)
+            self.paths = np.unique(self.paths, axis=0)
+            pbar.set_postfix({"input": before_len, "unique": len(self.paths)})
+            pbar.update(1)
+
+        print(f"Dataset pipeline completed. Final unique paths: {len(self.paths)}\n")
 
     def _load_dataset(self, filepath: str) -> np.ndarray:
         parsed_paths = []
-        with open(filepath, 'r', encoding='utf-8') as f:
-            for line in f:
+
+        def _parse_stream(stream, pbar_desc="[1/7] Parsing dataset lines"):
+            for line in tqdm(stream, desc=pbar_desc, unit="lines"):
                 line = line.strip()
                 if not line:
                     continue
                 actions = [line[i:i+2] for i in range(0, len(line), 2)]
                 path = [Cube.notation[action] for action in actions]
                 parsed_paths.append(path)
+
+        if filepath.endswith('.zip'):
+            with zipfile.ZipFile(filepath, 'r') as zf:
+                namelist = zf.namelist()
+                txt_files = [f for f in namelist if f.endswith('.txt') and not f.startswith('__MACOSX')]
+                target_filename = txt_files[0] if txt_files else namelist[0]
+
+                with zf.open(target_filename, 'r') as f:
+                    text_stream = io.TextIOWrapper(f, encoding='utf-8')
+                    _parse_stream(text_stream, pbar_desc=f"[1/7] Unzipping & parsing '{target_filename}'")
+        else:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                _parse_stream(f)
+
         return np.array(parsed_paths, dtype=np.uint8)
 
     def _filter_trie_prefixes(self, paths: np.ndarray, max_shared_prefix: int) -> np.ndarray:
         trie = {}
         unique_indices = []
         
-        for idx, path in enumerate(paths):
+        for idx, path in enumerate(tqdm(paths, desc="[2/7] Trie prefix filtering", unit="path")):
             current_node = trie
             is_redundant = False
             
@@ -276,7 +304,6 @@ class PathDatasetProcessor:
         num_candidates, path_length = candidates.shape
         num_select = min(num_select, num_candidates)
         
-        # 1. Resolve starting index
         if start_idx == "random":
             rng = np.random.default_rng(random_seed)
             first_idx = rng.integers(0, num_candidates)
@@ -284,46 +311,47 @@ class PathDatasetProcessor:
             first_idx = int(start_idx) % num_candidates
 
         weights = (prefix_decay ** np.arange(path_length, dtype=np.float32))
-        min_distances = np.full(num_candidates, fill_value=np.inf, dtype=np.float32)
         
         selected_indices = [first_idx]
         selected_matrix = np.zeros((num_select, path_length), dtype=np.uint8)
         selected_matrix[0] = candidates[first_idx]
         
-        # Initialize distances relative to the chosen first_idx
         mismatches = (candidates != candidates[first_idx])
         min_distances = np.sum(mismatches * weights, axis=1)
         
-        # 2. Max-Min selection loop
+        pbar = tqdm(total=num_select, desc="[3/7] Farthest Point Sampling", unit="seed")
+        pbar.update(1)
+        
         for i in range(1, num_select):
-            # Select the candidate farthest from all currently selected points
             next_idx = np.argmax(min_distances)
-            
             selected_indices.append(next_idx)
             selected_matrix[i] = candidates[next_idx]
             
-            # Update running minimum distance to the newly added centroid
             mismatches = (candidates != candidates[next_idx])
             distances_to_latest = np.sum(mismatches * weights, axis=1)
             min_distances = np.minimum(min_distances, distances_to_latest)
+            pbar.update(1)
             
+        pbar.close()
         return candidates[selected_indices]
 
-    def _generate_cyclic_shifts(self, paths: np.ndarray) -> np.ndarray:
-        # Fully vectorized cyclic roll across axis 1
+    def _generate_cyclic_shifts(self, paths: np.ndarray, shift_offsets: list[int] | None = None) -> np.ndarray:
         n_paths, path_len = paths.shape
-        shifts = [np.roll(paths, -i, axis=1) for i in range(path_len)]
+        
+        if shift_offsets is None:
+            shift_offsets = list(range(path_len))
+            
+        valid_shifts = list(dict.fromkeys([offset % path_len for offset in shift_offsets]))
+        
+        shifts = []
+        for offset in tqdm(valid_shifts, desc="[4/7] Generating cyclic shifts", unit="shift"):
+            shifts.append(np.roll(paths, -offset, axis=1))
+            
         return np.vstack(shifts)
 
     def _expand_with_reversed_antiactions(self, paths: np.ndarray) -> np.ndarray:
         num_actions = len(Cube.actions)
-        
-        # Convert actions list of lists into a 2D matrix: shape (num_actions, 54)
         actions_mat = np.array(Cube.actions, dtype=np.int32)
-        
-        # Identify the inverse for each action i
-        # action i followed by action j should yield the identity permutation range(54)
-        # composition: actions_mat[j, actions_mat[i]] == np.arange(54)
         identity = np.arange(actions_mat.shape[1])
         antiaction_map = np.zeros(num_actions, dtype=np.uint8)
         
@@ -333,10 +361,13 @@ class PathDatasetProcessor:
                     antiaction_map[i] = j
                     break
         
-        # Reverse along path axis (axis=1) and map to anti-actions
-        reversed_paths = antiaction_map[np.flip(paths, axis=1)]
-        
-        return np.vstack((paths, reversed_paths))
+        with tqdm(total=1, desc="[5/7] Applying anti-action inversions", leave=True) as pbar:
+            reversed_paths = antiaction_map[np.flip(paths, axis=1)]
+            expanded = np.vstack((paths, reversed_paths))
+            pbar.set_postfix({"total_paths": len(expanded)})
+            pbar.update(1)
+            
+        return expanded
 
     def _build_action_rotation_table(self) -> np.ndarray:
         num_rotations = len(Cube.rotations)
@@ -360,11 +391,16 @@ class PathDatasetProcessor:
         return table
 
     def _expand_paths_with_rotations(self, paths: np.ndarray, rotation_table: np.ndarray) -> np.ndarray:
-        # NumPy advanced indexing applies all 24 transformation rows simultaneously
-        # Input shape: (N, L) -> Output shape: (24, N, L)
-        expanded = rotation_table[:, paths]
-        # Reshape into a flat batch of paths: (24 * N, L)
-        return expanded.reshape(-1, paths.shape[1])
+        num_rotations = rotation_table.shape[0]
+        rotated_list = []
+        
+        # Iterating over the 24 rotational symmetries with tqdm
+        for r in tqdm(range(num_rotations), desc="[6/7] Expanding 24-orientation rotations", unit="rot"):
+            rotated_paths = rotation_table[r, paths]
+            rotated_list.append(rotated_paths)
+            
+        expanded = np.vstack(rotated_list)
+        return expanded
 
     def get_paths(self) -> np.ndarray:
         return self.paths.tolist()
@@ -373,7 +409,7 @@ class PathDatasetProcessor:
 if __name__ == "__main__":
 
   # 0. SELECT INITIAL SEED PATHS  
-  pdp = PathDatasetProcessor("htm4.txt", 4, max_shared_prefix=6)
+  pdp = PathDatasetProcessor("assets/htm4.zip", start_idx="random", num_select=16, shift_offsets=[0, 4, 8, 12, 16], max_shared_prefix=5)
   paths = pdp.get_paths()
 
   # 1. GENERATE
