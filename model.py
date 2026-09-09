@@ -26,7 +26,9 @@ class RubikDistancePredictor(LightningModule):
                num_classes=21,
                class_weights=None,
                grad_clip=0.5,
-               consistency_weight=None  # Default to None for legacy compatibility
+               consistency_weight=None,  # Legacy constant weight
+               start_consistency_weight=0.0,
+               schedule_consistency=None  # New schedule for consistency weight
                ):
     super().__init__()
     self.save_hyperparameters()
@@ -34,9 +36,25 @@ class RubikDistancePredictor(LightningModule):
     self.clipping_history = []
     self.window_size = 100
     
+    # Calculate total epochs based on the LR schedule
     self.total_epochs = sum(stage[1] for stage in schedule_lr)
     self.steps_per_epoch = int(np.ceil(train_ds_size / batch_size))
     self.total_steps = self.total_epochs * self.steps_per_epoch
+
+    # Initialize scheduling engine for Learning Rate
+    self.lr_schedule = PiecewiseSchedule(
+      start_val=self.hparams.start_lr,
+      schedule=self.hparams.schedule_lr,
+      steps_per_epoch=self.steps_per_epoch
+    )
+
+    # Initialize scheduling engine for Consistency Weight (if schedule provided)
+    if self.hparams.schedule_consistency is not None:
+      self.consistency_schedule = PiecewiseSchedule(
+        start_val=self.hparams.start_consistency_weight,
+        schedule=self.hparams.schedule_consistency,
+        steps_per_epoch=self.steps_per_epoch
+      )
 
     self.network = Sequential(
       Linear(324, self.hparams.hidden_dim), ReLU(),
@@ -60,9 +78,16 @@ class RubikDistancePredictor(LightningModule):
     x_aug = torch.gather(x_expanded, 2, idx)
     return x_aug.reshape(-1, 324)
 
-  def forward(self, x, return_aug=False):
+  def _get_current_consistency_weight(self):
+    if hasattr(self, 'consistency_schedule'):
+      return self.consistency_schedule.get_value(self.global_step)
     c_weight = self.hparams.get('consistency_weight', None)
-    is_legacy = c_weight is None or c_weight == 0
+    return c_weight if c_weight is not None else 0.0
+
+  def forward(self, x, return_aug=False):
+    c_weight = self._get_current_consistency_weight()
+    is_legacy = (self.hparams.get('consistency_weight', None) is None and 
+                 self.hparams.get('schedule_consistency', None) is None) or c_weight == 0
 
     # Ensure we have a batch dimension [Batch, 324]
     # This prevents simulate.py from breaking if it passes a flat [324] tensor
@@ -101,40 +126,66 @@ class RubikDistancePredictor(LightningModule):
 
   def training_step(self, batch, batch_idx):
     x, y = batch
-    c_weight = self.hparams.get('consistency_weight', 0) or 0
-    
-    if self.hparams.augment:
-      # 1. Forward pass (Batch x 24)
-      logits_aug = self.forward(x, return_aug=True)
-      
-      # 2. Stability Fix: Use Log-Softmax directly
-      log_probs = F.log_softmax(logits_aug, dim=-1)
-      
-      # 3. Supervision Loss: Only calculate on the flattened view
-      y_expanded = y.unsqueeze(1).repeat(1, 24).view(-1).long()
-      sup_loss = F.cross_entropy(logits_aug.view(-1, self.hparams.num_classes), y_expanded, weight=self.loss_weights)
+    c_weight = self._get_current_consistency_weight()
 
-      # 4. Consistency Loss: Prevent log(0) and NaNs
+    if self.hparams.augment:
+      logits_aug = self.forward(x, return_aug=True)
+      log_probs = F.log_softmax(logits_aug, dim=-1)
+
+      # 1. Supervision Loss
+      y_expanded = y.unsqueeze(1).repeat(1, 24).view(-1).long()
+      sup_loss = F.cross_entropy(
+          logits_aug.view(-1, self.hparams.num_classes),
+          y_expanded,
+          weight=self.loss_weights,
+      )
+
+      # 2. Consistency Loss
       with torch.no_grad():
-        # We target the average probability across orientations
         target_probs = torch.softmax(logits_aug, dim=-1).mean(dim=1).detach()
-        # Add epsilon to prevent log(0) if model is perfectly confident
         target_probs = target_probs.clamp(min=1e-7)
 
-      # KL Div using log_probs we already calculated
       consistency_loss = F.kl_div(
-        log_probs, 
-        target_probs.unsqueeze(1).expand_as(log_probs), 
-        reduction='batchmean'
+          log_probs,
+          target_probs.unsqueeze(1).expand_as(log_probs),
+          reduction='batchmean',
       )
-      
-      loss = sup_loss + (c_weight * consistency_loss)
+
+      # 3. Scaled consistency contribution
+      weighted_consistency = c_weight * consistency_loss
+      loss = sup_loss + weighted_consistency
+
+      # 4. Compute Loss Ratio (%)
+      # Protect against div-by-zero during early initialization
+      loss_ratio = (weighted_consistency / (sup_loss + 1e-8)) * 100.0
+
+      # Log individual components to TensorBoard
+      self.log('loss/sup_loss', sup_loss, on_step=True, on_epoch=True)
+      self.log(
+          'loss/consistency_loss_raw',
+          consistency_loss,
+          on_step=True,
+          on_epoch=True,
+      )
+      self.log(
+          'loss/weighted_consistency',
+          weighted_consistency,
+          on_step=True,
+          on_epoch=True,
+      )
+      self.log(
+          'loss/consistency_ratio_pct',
+          loss_ratio,
+          on_step=True,
+          on_epoch=True,
+          prog_bar=True,
+      )
     else:
-      # Standard non-augmented path
       logits = self.network(x)
       loss = F.cross_entropy(logits, y.long())
 
-    self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)  
+    self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+    self.log('c_weight', c_weight, on_step=True, prog_bar=True)
     return loss
 
   def validation_step(self, batch, batch_idx):
@@ -163,35 +214,11 @@ class RubikDistancePredictor(LightningModule):
   def configure_optimizers(self):
     # Base LR is 1.0 because the lambda provides absolute LR values
     optimizer = SGD(self.parameters(), lr=1.0)
-    
-    segments = []
-    current_step_boundary = 0
-    current_lr = self.hparams.start_lr
-
-    for target_lr, duration_epochs in self.hparams.schedule_lr:
-      duration_steps = int(duration_epochs * self.steps_per_epoch)
-      segments.append({
-        "start": current_step_boundary,
-        "end": current_step_boundary + duration_steps,
-        "lrs": (current_lr, target_lr)
-      })
-      current_step_boundary += duration_steps
-      current_lr = target_lr
-
-    def schedule_lambda(current_step):
-      for seg in segments:
-        if seg["start"] <= current_step < seg["end"]:
-          # Linear interpolation within segments
-          t = (current_step - seg["start"]) / (seg["end"] - seg["start"])
-          return seg["lrs"][0] + t * (seg["lrs"][1] - seg["lrs"][0])
-      
-      # Final floor value if run exceeds steps
-      return self.hparams.schedule_lr[-1][0]
 
     return {
       'optimizer': optimizer,
       'lr_scheduler': {
-        'scheduler': LambdaLR(optimizer, schedule_lambda),
+        'scheduler': LambdaLR(optimizer, self.lr_schedule.get_value),
         'interval': 'step',
         'name': 'lr_scheduler'
       }
@@ -245,6 +272,33 @@ class RubikEnsemble:
       expected_value = (avg_probs * self.distances).sum(dim=-1)
       return expected_value
 
+class PiecewiseSchedule:
+  """Generates linear interpolation segments across training steps."""
+  def __init__(self, start_val: float, schedule: list, steps_per_epoch: int):
+    self.segments = []
+    current_step = 0
+    current_val = start_val
+
+    for target_val, duration_epochs in schedule:
+      duration_steps = int(duration_epochs * steps_per_epoch)
+      self.segments.append({
+        "start": current_step,
+        "end": current_step + duration_steps,
+        "vals": (current_val, target_val)
+      })
+      current_step += duration_steps
+      current_val = target_val
+
+    self.fallback_val = schedule[-1][0] if schedule else start_val
+
+  def get_value(self, current_step: int) -> float:
+    for seg in self.segments:
+      if seg["start"] <= current_step < seg["end"]:
+        t = (current_step - seg["start"]) / (seg["end"] - seg["start"])
+        return seg["vals"][0] + t * (seg["vals"][1] - seg["vals"][0])
+
+    return self.fallback_val
+
 if __name__ == "__main__":  
   # --- SIGNAL HANDLER SETUP ---
   import signal
@@ -286,11 +340,18 @@ if __name__ == "__main__":
     # 2. Manual Setup to populate the subsets
     datamodule.setup()
 
-    # 3. Define a Learning Rate Schedule
+    # 3. Define Schedules
     start_lr = 0
     schedule_lr = [
       (max_lr, 10),
       (1e-5, 200)
+    ]
+
+    start_consistency_weight = 0.0
+    schedule_consistency = [
+      (0.0, 15),   # Epochs 0-15: Pure distance learning (no KL)
+      (0.3, 30),   # Epochs 15-45: Ramp consistency weight up to 0.3
+      (0.3, 165)   # Hold at 0.3 for remaining epochs
     ]
 
     # Synchronized TensorBoard Logger
@@ -316,10 +377,11 @@ if __name__ == "__main__":
       batch_size=datamodule.train_batch_size,
       start_lr=start_lr,
       schedule_lr=schedule_lr,
+      start_consistency_weight=start_consistency_weight,
+      schedule_consistency=schedule_consistency,
       augment=True,
       class_weights=None,#datamodule.class_weights,
       grad_clip=5,
-      consistency_weight=0.3,
     )
 
     # 5. Hire a Trainer
