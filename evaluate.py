@@ -1,5 +1,8 @@
 # 2026 - copyright - all rights reserved - clayton thomas baber
 
+import os
+import glob
+import numpy as np
 from time import time
 from tqdm import tqdm
 from cube import Cube
@@ -13,18 +16,43 @@ if __name__ == "__main__":
   root.withdraw()
   
   model_paths = []
-  for _ in range(int(input("number of models? "))):
-    model_path = filedialog.askopenfilename(initialdir="checkpoints")
-    model_paths.append(model_path)
+  all_endpoints = []
+
+  num_models = int(input("number of models? "))
+  for _ in range(num_models):
+    run_dir = filedialog.askdirectory(initialdir="checkpoints", title="Select Run Directory")
+    
+    if not run_dir:
+      continue
+
+    # 1. Find Checkpoint File (.ckpt)
+    ckpts = glob.glob(os.path.join(run_dir, "*.ckpt"))
+    if not ckpts:
+      raise FileNotFoundError(f"No .ckpt file found in {run_dir}")
+    
+    # Filter out 'last.ckpt' if specific accuracy checkpoints exist
+    best_ckpts = [c for c in ckpts if not c.endswith("last.ckpt")]
+    chosen_ckpt = sorted(best_ckpts)[-1] if best_ckpts else ckpts[0]
+    model_paths.append(chosen_ckpt)
+
+    # 2. Load Endpoints (.npy)
+    endpoints_path = os.path.join(run_dir, "endpoints.npy")
+    if os.path.exists(endpoints_path):
+      run_endpoints = np.load(endpoints_path)
+      all_endpoints.append(run_endpoints)
+    else:
+      print(f"Warning: 'endpoints.npy' not found in {run_dir}")
+
+  if not all_endpoints:
+    raise FileNotFoundError("No endpoints found across selected run directories.")
+
+  # Concatenate arrays if multiple runs selected, deduplicate, and convert to list
+  concatenated_endpoints = np.vstack(all_endpoints)
+  cases = set(tuple(ep) for ep in concatenated_endpoints)
   
   model = RubikEnsemble(model_paths)
 
   cube = Cube()
-  cases = set()
-  for orbit in Cube.orbits:
-    cube.reset()
-    cube.algo(orbit[:20])
-    cases.add(cube.getState())
   total = len(cases)
   spacer = len(str(total))
   
@@ -84,4 +112,4 @@ if __name__ == "__main__":
     
 
   end_time = time()
-  print(f"done evaluating: {outcomes['success']/total} accuracy. {end_time - start_time}\n", "\n".join(model_paths))
+  print(f"done evaluating: {outcomes['success']/total} accuracy. finished in {end_time - start_time}\n", "\n".join(model_paths))

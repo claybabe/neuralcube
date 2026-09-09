@@ -8,9 +8,12 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.cuda import empty_cache
 from pytorch_lightning import Trainer, LightningModule
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.loggers import TensorBoardLogger
 from dataset import RubikDistanceDataModule, RubikManager, PathDatasetProcessor
 from cube import Cube
 import numpy as np
+import datetime
+import os
 
 class RubikDistancePredictor(LightningModule):
   def __init__(self,
@@ -242,15 +245,7 @@ class RubikEnsemble:
       expected_value = (avg_probs * self.distances).sum(dim=-1)
       return expected_value
 
-if __name__ == "__main__":
-  # 0. generate data
-
-  pdp = PathDatasetProcessor("assets/htm4.zip", start_idx="random", num_select=16, shift_offsets=[0, 4, 8, 12, 16], max_shared_prefix=5)
-  paths = pdp.get_paths()
-
-  manager = RubikManager()
-  manager.generate_dataset(paths, deep_layers=2)
-  
+if __name__ == "__main__":  
   # --- SIGNAL HANDLER SETUP ---
   import signal
   def manual_skip_handler(signum, frame):
@@ -261,10 +256,32 @@ if __name__ == "__main__":
   signal.signal(signal.SIGUSR1, manual_skip_handler)
   # ----------------------------
 
-  for MAXLR in [1.2, 1.1, 1.0, 0.9, 0.8, 0.7]:
+  for run in range(6):
+
+    train_batch_size = 256
+    val_batch_size = 24795
+    train_split = 0.98
+
+    max_lr = 1.2
+
+    # Create a unique, synchronized run identifier
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{timestamp}_run_{run}"
+    run_dir = os.path.join("checkpoints", run_name)
+    os.makedirs(run_dir, exist_ok=True)
+
+    pdp = PathDatasetProcessor("assets/htm4.zip", start_idx="random", num_select=32, shift_offsets=[0, 4, 8, 12, 16], max_shared_prefix=5)
+    paths = pdp.get_paths()
+    endpoints = pdp.get_endpoints()
+
+    manager = RubikManager()
+    manager.generate_dataset(paths.tolist(), deep_layers=2)
+  
+    # Save endpoints directly in the run directory for standalone evaluation
+    np.save(os.path.join(run_dir, "endpoints.npy"), endpoints)
 
     # 1. Initialize Datamodule
-    datamodule = RubikDistanceDataModule(train_batch_size=256, val_batch_size=24795, train_split=0.98)
+    datamodule = RubikDistanceDataModule(train_batch_size=train_batch_size, val_batch_size=val_batch_size, train_split=train_split)
     
     # 2. Manual Setup to populate the subsets
     datamodule.setup()
@@ -272,20 +289,26 @@ if __name__ == "__main__":
     # 3. Define a Learning Rate Schedule
     start_lr = 0
     schedule_lr = [
-      (MAXLR, 10),
+      (max_lr, 10),
       (1e-5, 200)
     ]
+
+    # Synchronized TensorBoard Logger
+    tb_logger = TensorBoardLogger(
+        save_dir="lightning_logs",
+        name="rubik_runs",
+        version=run_name
+    )
+
     lr_monitor = LearningRateMonitor(logging_interval='step')
     
     checkpoint_callback = ModelCheckpoint(
-      monitor='val_acc',        # We want the highest accuracy
-      dirpath='checkpoints/',    # Where to save
-      filename='rubik-{epoch:02d}-{val_acc:.4f}',
-      #save_top_k=3,             # Keep the best 3 models
-      mode='max',               # 'max' because higher val_acc is better
-      save_last=True            # Always keep 'last.ckpt' for easy resuming
+        dirpath=run_dir,
+        filename="{epoch:02d}-{val_acc:.4f}",
+        monitor='val_acc',
+        mode='max',
+        save_last=True
     )
-
     # 4. Initialize Model
     model = RubikDistancePredictor(
       hidden_dim=4096,
@@ -294,7 +317,7 @@ if __name__ == "__main__":
       start_lr=start_lr,
       schedule_lr=schedule_lr,
       augment=True,
-      class_weights=datamodule.class_weights,
+      class_weights=None,#datamodule.class_weights,
       grad_clip=5,
       consistency_weight=0.3,
     )
@@ -304,11 +327,12 @@ if __name__ == "__main__":
       max_epochs=model.total_epochs,
       benchmark=True,
       accelerator="gpu",
+      logger=tb_logger,  # <--- Pass synchronized logger here
       callbacks=[lr_monitor, checkpoint_callback],
       precision="16-mixed",
       gradient_clip_val=model.hparams.grad_clip,
     )
-    
+
     try:
         trainer.fit(model, datamodule)
     except Exception as e:

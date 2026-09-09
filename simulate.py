@@ -5,9 +5,10 @@ import pygame
 import threading
 import sys
 import os
+import glob
+import numpy as np
 from cube import Cube
 from model import RubikDistancePredictor, RubikEnsemble
-from dataset import PathDatasetProcessor
 from torch import tensor, argsort, float32
 from tkinter import Tk, filedialog
 from collections import defaultdict
@@ -225,18 +226,43 @@ def resource_path(relative_path):
 
 
 if __name__ == "__main__":
-  
-  paths = PathDatasetProcessor._load_dataset(None, filepath = "assets/htm4.zip")
-  paths = paths.tolist()
-  ENDPOINTS = []
-  with tqdm(total=len(paths), desc="Finding Endpoints", leave=True) as pbar:
-    for path in paths:
-      cube = Cube()
-      for action in path:
-        cube.act(action)
-      ENDPOINTS.append(cube.getState())
-      pbar.update(1)
-    pbar.set_postfix({"Total Endpoints": len(ENDPOINTS)})
+  root = Tk()
+  root.withdraw()  # Hide root tkinter window
+
+  model_paths = []
+  all_endpoints = []
+
+  num_models = int(input("number of models? "))
+  for _ in range(num_models):
+    run_dir = filedialog.askdirectory(initialdir="checkpoints", title="Select Run Directory")
+    
+    if not run_dir:
+      continue
+
+    # 1. Find Checkpoint File (.ckpt)
+    ckpts = glob.glob(os.path.join(run_dir, "*.ckpt"))
+    if not ckpts:
+      raise FileNotFoundError(f"No .ckpt file found in {run_dir}")
+    
+    # Filter out 'last.ckpt' if specific accuracy checkpoints exist
+    best_ckpts = [c for c in ckpts if not c.endswith("last.ckpt")]
+    chosen_ckpt = sorted(best_ckpts)[-1] if best_ckpts else ckpts[0]
+    model_paths.append(chosen_ckpt)
+
+    # 2. Load Endpoints (.npy)
+    endpoints_path = os.path.join(run_dir, "endpoints.npy")
+    if os.path.exists(endpoints_path):
+      run_endpoints = np.load(endpoints_path)
+      all_endpoints.append(run_endpoints)
+    else:
+      print(f"Warning: 'endpoints.npy' not found in {run_dir}")
+
+  if not all_endpoints:
+    raise FileNotFoundError("No endpoints found across selected run directories.")
+
+  # Concatenate arrays if multiple runs selected, then convert to python list
+  concatenated_endpoints = np.vstack(all_endpoints)
+  ENDPOINTS = concatenated_endpoints.tolist()
 
   ENDPOINT = 0
   neuralcube = Cube()
@@ -244,11 +270,6 @@ if __name__ == "__main__":
 
   neuralcube.setState(ENDPOINTS[ENDPOINT])
 
-  model_paths = []
-  for _ in range(int(input("number of models? "))):
-    model_path = filedialog.askopenfilename(initialdir="checkpoints")
-    model_paths.append(model_path)
-  
   model = RubikEnsemble(model_paths)
 
   try:

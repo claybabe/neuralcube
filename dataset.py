@@ -407,7 +407,20 @@ class PathDatasetProcessor:
         return expanded
 
     def get_paths(self) -> np.ndarray:
-        return self.paths.tolist()
+        return self.paths
+
+    def get_endpoints(self) -> np.ndarray:
+        """
+        Executes each path on a solved cube and returns the final 54-sticker 
+        state array for evaluation/solving tests.
+        """
+        endpoints = []
+        for path in tqdm(self.paths, desc="Extracting path endpoints", unit="path"):
+            c = Cube()
+            for action in path:
+                c.act(action)
+            endpoints.append(c.state.copy())
+        return np.array(endpoints, dtype=np.uint8)
 
 # --- EXAMPLE USAGE ---
 if __name__ == "__main__":
@@ -418,7 +431,7 @@ if __name__ == "__main__":
 
   # 1. GENERATE
   manager = RubikManager()
-  manager.generate_dataset(paths, deep_layers=2) # Comment out if already generated
+  manager.generate_dataset(paths.tolist(), deep_layers=2) # Comment out if already generated
 
   # 2. INITIALIZE DATA MODULE
   # Note: Use your actual desired batch_size here, e.g., 1024
