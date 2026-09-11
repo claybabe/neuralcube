@@ -349,9 +349,32 @@ if __name__ == "__main__":
 
     start_consistency_weight = 0.0
     schedule_consistency = [
-      (0.0, 15),   # Epochs 0-15: Pure distance learning (no KL)
-      (0.3, 30),   # Epochs 15-45: Ramp consistency weight up to 0.3
-      (0.3, 165)   # Hold at 0.3 for remaining epochs
+        # --- Warmup Phase ---
+        (0.00, 30),  # Epochs 0-30: Pure supervision learning (c_weight = 0)
+        # --- Cycle 1 (Peak: 0.08) ---
+        (0.08, 12),  # Ramp up to 0.08
+        (0.00, 12),  # Ramp down to 0.00
+        (0.00, 6),  # Hold at 0.00 for unconstrained exploration
+        # --- Cycle 2 (Peak: 0.06) ---
+        (0.06, 12),  # Ramp up
+        (0.00, 12),  # Ramp down
+        (0.00, 6),  # Hold at 0.00
+        # --- Cycle 3 (Peak: 0.05) ---
+        (0.05, 12),  # Ramp up
+        (0.00, 12),  # Ramp down
+        (0.00, 6),  # Hold at 0.00
+        # --- Cycle 4 (Peak: 0.04) ---
+        (0.04, 12),  # Ramp up
+        (0.00, 12),  # Ramp down
+        (0.00, 6),  # Hold at 0.00
+        # --- Cycle 5 (Peak: 0.03) ---
+        (0.03, 12),  # Ramp up
+        (0.00, 12),  # Ramp down
+        (0.00, 6),  # Hold at 0.00
+        # --- Cycle 6 (Peak: 0.02) ---
+        (0.02, 12),  # Ramp up
+        (0.00, 12),  # Ramp down
+        (0.00, 6),  # Final hold at 0.00
     ]
 
     # Synchronized TensorBoard Logger
