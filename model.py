@@ -14,22 +14,30 @@ from cube import Cube
 import numpy as np
 import datetime
 import os
+import math
 
 class RubikDistancePredictor(LightningModule):
-  def __init__(self,
-               hidden_dim=256,
-               train_ds_size=23364033,
-               batch_size=64,
-               start_lr=0.001,
-               schedule_lr=[(0.03, 5), (0.02, 2), (0.02, 40), (0.0001, 50)],
-               augment=False,
-               num_classes=21,
-               class_weights=None,
-               grad_clip=0.5,
-               consistency_weight=None,  # Legacy constant weight
-               start_consistency_weight=0.0,
-               schedule_consistency=None  # New schedule for consistency weight
-               ):
+
+  def __init__(
+      self,
+      hidden_dim=256,
+      train_ds_size=23364033,
+      batch_size=64,
+      start_lr=0.001,
+      schedule_lr=[(0.03, 5), (0.02, 2), (0.02, 40), (0.0001, 50)],
+      augment=False,
+      num_classes=21,
+      class_weights=None,
+      grad_clip=0.5,
+      waiting_epochs=30,
+      finished_epochs=10,
+      target_ratio_pct=0.15,
+      cycle_ratios=[2, 3, 5, 4],
+      total_cycles=6,
+      warmup_rate=1.5,
+      decay_factor=0.85,
+      ema_epoch_fraction=0.1,
+  ):
     super().__init__()
     self.save_hyperparameters()
 
@@ -48,13 +56,19 @@ class RubikDistancePredictor(LightningModule):
       steps_per_epoch=self.steps_per_epoch
     )
 
-    # Initialize scheduling engine for Consistency Weight (if schedule provided)
-    if self.hparams.schedule_consistency is not None:
-      self.consistency_schedule = PiecewiseSchedule(
-        start_val=self.hparams.start_consistency_weight,
-        schedule=self.hparams.schedule_consistency,
-        steps_per_epoch=self.steps_per_epoch
-      )
+    # Initialize dynamic consistency scheduler
+    self.consistency_schedule = AdaptiveCyclicConsistencySchedule(
+        total_epochs=self.total_epochs,
+        waiting_epochs=self.hparams.waiting_epochs,
+        finished_epochs=self.hparams.finished_epochs,
+        target_ratio_pct=self.hparams.target_ratio_pct,
+        cycle_ratios=self.hparams.cycle_ratios,
+        total_cycles=self.hparams.total_cycles,
+        warmup_rate=self.hparams.warmup_rate,
+        decay_factor=self.hparams.decay_factor,
+        ema_epoch_fraction=self.hparams.ema_epoch_fraction,
+        steps_per_epoch=self.steps_per_epoch,
+    )
 
     self.network = Sequential(
       Linear(324, self.hparams.hidden_dim), ReLU(),
@@ -79,15 +93,11 @@ class RubikDistancePredictor(LightningModule):
     return x_aug.reshape(-1, 324)
 
   def _get_current_consistency_weight(self):
-    if hasattr(self, 'consistency_schedule'):
-      return self.consistency_schedule.get_value(self.global_step)
-    c_weight = self.hparams.get('consistency_weight', None)
-    return c_weight if c_weight is not None else 0.0
+    current_epoch = self.global_step / self.steps_per_epoch
+    return self.consistency_schedule.get_weight(current_epoch)
 
   def forward(self, x, return_aug=False):
     c_weight = self._get_current_consistency_weight()
-    is_legacy = (self.hparams.get('consistency_weight', None) is None and 
-                 self.hparams.get('schedule_consistency', None) is None) or c_weight == 0
 
     # Ensure we have a batch dimension [Batch, 324]
     # This prevents simulate.py from breaking if it passes a flat [324] tensor
@@ -104,7 +114,7 @@ class RubikDistancePredictor(LightningModule):
 
     # Inference/Validation logic with Memory Management
     with torch.no_grad():
-      if is_legacy or not self.hparams.augment:
+      if not self.hparams.augment or c_weight == 0.0:
         logits = self.network(x)
         return torch.softmax(logits, dim=-1)
 
@@ -149,6 +159,11 @@ class RubikDistancePredictor(LightningModule):
           log_probs,
           target_probs.unsqueeze(1).expand_as(log_probs),
           reduction='batchmean',
+      )
+
+      # Record losses for EMA calibration in the adaptive scheduler
+      self.consistency_schedule.record_losses(
+          sup_loss=sup_loss.item(), raw_kl_loss=consistency_loss.item()
       )
 
       # 3. Scaled consistency contribution
@@ -299,6 +314,112 @@ class PiecewiseSchedule:
 
     return self.fallback_val
 
+class AdaptiveCyclicConsistencySchedule:
+  """Dynamic adaptive cyclic consistency scheduler based on loss feedback and EMA ratio targeting."""
+
+  def __init__(
+      self,
+      total_epochs=210,
+      waiting_epochs=30,
+      finished_epochs=10,
+      target_ratio_pct=0.15,
+      cycle_ratios=[2, 3, 5, 4],
+      total_cycles=6,
+      warmup_rate=1.5,
+      decay_factor=0.85,
+      ema_epoch_fraction=0.1,
+      steps_per_epoch=36506,
+  ):
+    self.total_epochs = total_epochs
+    self.waiting_epochs = waiting_epochs
+    self.finished_epochs = finished_epochs
+    self.target_ratio_pct = target_ratio_pct
+    self.total_cycles = total_cycles
+    self.warmup_rate = warmup_rate
+    self.decay_factor = decay_factor
+
+    # Active phase duration and cycle lengths
+    self.active_epochs = self.total_epochs - (self.waiting_epochs + self.finished_epochs)
+    self.cycle_len = self.active_epochs / max(1, self.total_cycles)
+
+    # Sub-phase duration scaling within a cycle
+    ratio_sum = sum(cycle_ratios)
+    self.r_ramp = (cycle_ratios[0] / ratio_sum) * self.cycle_len
+    self.r_hold = (cycle_ratios[1] / ratio_sum) * self.cycle_len
+    self.r_decay = (cycle_ratios[2] / ratio_sum) * self.cycle_len
+    self.r_rest = (cycle_ratios[3] / ratio_sum) * self.cycle_len
+
+    # EMA Decay Factor calculation (step-based exponential smoothing)
+    steps_in_fraction = max(1.0, ema_epoch_fraction * steps_per_epoch)
+    self.alpha = 1.0 - math.exp(-1.0 / steps_in_fraction)
+
+    self.ema_sup = None
+    self.ema_kl = None
+
+  def record_losses(self, sup_loss: float, raw_kl_loss: float):
+    """Updates exponential moving averages for real-time target weight tracking."""
+    if self.ema_sup is None:
+      self.ema_sup = float(sup_loss)
+      self.ema_kl = float(raw_kl_loss)
+    else:
+      self.ema_sup = self.alpha * float(sup_loss) + (1.0 - self.alpha) * self.ema_sup
+      self.ema_kl = self.alpha * float(raw_kl_loss) + (1.0 - self.alpha) * self.ema_kl
+
+  def _get_current_target_weight(self, cycle_idx: int) -> float:
+    """Calculates instantaneous target weight to achieve target ratio given current EMA dynamics."""
+    if self.ema_sup is None or self.ema_kl is None or self.ema_kl <= 1e-8:
+      return 0.0
+
+    # Base weight required to hit target percentage
+    base_factor = self.target_ratio_pct / (1.0 - self.target_ratio_pct)
+    w_ideal = base_factor * (self.ema_sup / self.ema_kl)
+
+    # Apply Bell-shaped Warmup-Damping Profile across cycles: M(k) = (1 - e^(-w*(k+1))) * d^k
+    cycle_multiplier = (1.0 - math.exp(-self.warmup_rate * (cycle_idx + 1))) * (self.decay_factor ** cycle_idx)
+
+    return w_ideal * cycle_multiplier
+
+  def get_weight(self, current_epoch: float) -> float:
+    """Main method to query current consistency weight."""
+    # Outer Phase 1: Waiting Phase
+    if current_epoch < self.waiting_epochs:
+      return 0.0
+
+    # Outer Phase 3: Finished Phase
+    if current_epoch >= (self.total_epochs - self.finished_epochs):
+      return 0.0
+
+    # Outer Phase 2: Active Phase
+    elapsed = current_epoch - self.waiting_epochs
+    cycle_idx = int(elapsed // self.cycle_len)
+
+    if cycle_idx >= self.total_cycles:
+      return 0.0
+
+    cycle_progress = elapsed % self.cycle_len
+    target_weight = self._get_current_target_weight(cycle_idx)
+
+    # Sub-phase 1: Ramp
+    if cycle_progress < self.r_ramp:
+      progress = cycle_progress / self.r_ramp
+      return target_weight * 0.5 * (1.0 - math.cos(math.pi * progress))
+
+    cycle_progress -= self.r_ramp
+
+    # Sub-phase 2: Hold
+    if cycle_progress < self.r_hold:
+      return target_weight
+
+    cycle_progress -= self.r_hold
+
+    # Sub-phase 3: Decay
+    if cycle_progress < self.r_decay:
+      progress = cycle_progress / self.r_decay
+      return target_weight * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    # Sub-phase 4: Rest
+    return 0.0
+
 if __name__ == "__main__":  
   # --- SIGNAL HANDLER SETUP ---
   import signal
@@ -347,37 +468,6 @@ if __name__ == "__main__":
       (1e-5, 200)
     ]
 
-    start_consistency_weight = 0.0
-    schedule_consistency = [
-        # --- Warmup Phase ---
-        (0.00, 30),  # Epochs 0-30: Pure supervision learning (c_weight = 0)
-        # --- Cycle 1 (Peak: 0.08) ---
-        (0.08, 12),  # Ramp up to 0.08
-        (0.00, 12),  # Ramp down to 0.00
-        (0.00, 6),  # Hold at 0.00 for unconstrained exploration
-        # --- Cycle 2 (Peak: 0.06) ---
-        (0.06, 12),  # Ramp up
-        (0.00, 12),  # Ramp down
-        (0.00, 6),  # Hold at 0.00
-        # --- Cycle 3 (Peak: 0.05) ---
-        (0.05, 12),  # Ramp up
-        (0.00, 12),  # Ramp down
-        (0.00, 6),  # Hold at 0.00
-        # --- Cycle 4 (Peak: 0.04) ---
-        (0.04, 12),  # Ramp up
-        (0.00, 12),  # Ramp down
-        (0.00, 6),  # Hold at 0.00
-        # --- Cycle 5 (Peak: 0.03) ---
-        (0.03, 12),  # Ramp up
-        (0.00, 12),  # Ramp down
-        (0.00, 6),  # Hold at 0.00
-        # --- Cycle 6 (Peak: 0.02) ---
-        (0.02, 12),  # Ramp up
-        (0.00, 12),  # Ramp down
-        (0.00, 6),  # Final hold at 0.00
-    ]
-
-    # Synchronized TensorBoard Logger
     tb_logger = TensorBoardLogger(
         save_dir="lightning_logs",
         name="rubik_runs",
@@ -395,16 +485,22 @@ if __name__ == "__main__":
     )
     # 4. Initialize Model
     model = RubikDistancePredictor(
-      hidden_dim=4096,
-      train_ds_size=len(datamodule.train_ds),
-      batch_size=datamodule.train_batch_size,
-      start_lr=start_lr,
-      schedule_lr=schedule_lr,
-      start_consistency_weight=start_consistency_weight,
-      schedule_consistency=schedule_consistency,
-      augment=True,
-      class_weights=None,#datamodule.class_weights,
-      grad_clip=5,
+        hidden_dim=4096,
+        train_ds_size=len(datamodule.train_ds),
+        batch_size=datamodule.train_batch_size,
+        start_lr=start_lr,
+        schedule_lr=schedule_lr,
+        waiting_epochs=30,
+        finished_epochs=10,
+        target_ratio_pct=0.15,
+        cycle_ratios=[2, 3, 5, 4],
+        total_cycles=6,
+        warmup_rate=1.5,
+        decay_factor=0.85,
+        ema_epoch_fraction=0.1,
+        augment=True,
+        class_weights=None,#datamodule.class_weights,
+        grad_clip=5,
     )
 
     # 5. Hire a Trainer
