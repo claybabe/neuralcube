@@ -89,6 +89,15 @@ class Cube():
     "B1" : 17
   }
 
+  bipolar_map = (
+      (1, 0, 0),    # 0: Up (White)
+      (0, 1, 0),    # 1: Front (Red)
+      (0, 0, 1),    # 2: Right (Blue)
+      (-1, 0, 0),   # 3: Bottom (Yellow)
+      (0, -1, 0),   # 4: Back (Orange)
+      (0, 0, -1),   # 5: Left (Green)
+  )
+
   def __init__(self, cube=None):
     self.state = Cube.solved if cube is None else cube.state
     self.target = Cube.solved if cube is None else cube.target
@@ -123,17 +132,9 @@ class Cube():
 
   def toBipolarHot(self):
     subject = self.toColor()
-    bipolar_map = (
-        (1, -1, 0),   # 0: Up (White)
-        (1, 0, -1),   # 1: Front (Red)
-        (0, -1, 1),   # 2: Right (Blue)
-        (-1, 1, 0),   # 3: Bottom (Yellow)
-        (-1, 0, 1),   # 4: Back (Orange)
-        (0, 1, -1),   # 5: Left (Green)
-    )
     out = []
     for sticker in subject:
-      out += bipolar_map[sticker]
+      out += Cube.bipolar_map[sticker]
     return out
 
   def toColorHot(self, L=1):
@@ -260,7 +261,42 @@ if __name__ == "__main__":
   print(f"All rotation tests passed. Unique state representations across non-identity rotations: {len(all_rotation_states)}\n")
 
 
-  # 3. Path Cycle Tests via htm4.zip
+  # 3. Bipolar Encoding Tests
+  print("--- Testing Bipolar Encodings ---")
+  
+  # A. Solved Cube Properties
+  cube = Cube()
+  bipolar = cube.toBipolarHot()
+  
+  assert len(bipolar) == 162, f"Expected bipolar length 162, got {len(bipolar)}"
+  assert sum(bipolar) == 0, f"Bipolar encoding is not zero-centered! Sum = {sum(bipolar)}"
+  
+  # B. Scrambled Cube Zero-Sum Invariant
+  scramble = [0, 4, 2, 11, 15, 7, 8, 1, 14, 3]  # Arbitrary test scramble
+  cube.algo(scramble)
+  scrambled_bipolar = cube.toBipolarHot()
+  assert sum(scrambled_bipolar) == 0, f"Scrambled bipolar sum broken! Sum = {sum(scrambled_bipolar)}"
+  
+  # C. Geometric Properties Verification via Class Map
+  opposites = [(0, 3), (1, 4), (2, 5)]  # Up/Bottom, Front/Back, Right/Left
+  
+  # 1. Opposite Inverses Check
+  for c1, c2 in opposites:
+    v1, v2 = Cube.bipolar_map[c1], Cube.bipolar_map[c2]
+    inv_v1 = tuple(-x for x in v1)
+    assert inv_v1 == v2, f"Opposite colors {c1} and {c2} are not inverse vectors!"
+    dot_opp = sum(a * b for a, b in zip(v1, v2))
+    assert dot_opp == -1, f"Expected dot product -1 for opposite pair ({c1}, {c2}), got {dot_opp}"
+    
+  # 2. Adjacent Equidistance Check
+  adjacent_pairs = [(c1, c2) for c1 in range(6) for c2 in range(6) if c1 != c2 and (min(c1, c2), max(c1, c2)) not in opposites]
+  for c1, c2 in adjacent_pairs:
+    dot_adj = sum(a * b for a, b in zip(Cube.bipolar_map[c1], Cube.bipolar_map[c2]))
+    assert dot_adj == 0, f"Adjacent pair ({c1}, {c2}) has non-uniform dot product {dot_adj} (expected 0)"
+
+  print("All bipolar encoding tests passed.\n")
+ 
+  # 4. Path Cycle Tests via htm4.zip
   print("--- Testing Paths in htm4.zip ---")
   path_cycle_counts = Counter()
   action_distribution = Counter()
