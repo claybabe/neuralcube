@@ -121,8 +121,32 @@ class Cube():
     color_map = tuple([0]*9 + [1]*9 + [2]*9 + [3]*9 + [4]*9 + [5]*9)
     return [color_map[i] for i in self.state]
 
+  def toBipolarHot(self):
+    subject = self.toColor()
+    bipolar_map = (
+        (1, -1, 0),   # 0: Up (White)
+        (1, 0, -1),   # 1: Front (Red)
+        (0, -1, 1),   # 2: Right (Blue)
+        (-1, 1, 0),   # 3: Bottom (Yellow)
+        (-1, 0, 1),   # 4: Back (Orange)
+        (0, 1, -1),   # 5: Left (Green)
+    )
+    out = []
+    for sticker in subject:
+      out += bipolar_map[sticker]
+    return out
+
   def toColorHot(self, L=1):
-    color_hot = ((0, 0, L),(0, L, 0),(0, L, L),(L, 0, 0),(L, 0, L),(L, L, 0))
+    # Fixed color tuples matching: White, Red, Blue, Yellow, Orange, Green
+    # Scaled by integer L
+    color_hot = (
+        (L, L, L),        # 0: Up (White)
+        (L, 0, 0),        # 1: Front (Red)
+        (0, 0, L),        # 2: Right (Blue)
+        (L, L, 0),        # 3: Bottom (Yellow)
+        (L, int(0.5*L), 0), # 4: Back (Orange)
+        (0, L, 0)         # 5: Left (Green)
+    )
     subject = self.toColor()
     state = [color_hot[i] for i in subject]
     return state

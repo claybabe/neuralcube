@@ -141,15 +141,6 @@ def pygame_loop(queue, stop_event):
       state = neuralcube.getState()
       probe =  tensor(neuralcube.getProbe(), dtype=float32)
       predictions = model(probe).squeeze()
-      # --- QUICK & DIRTY SOLVE-CHECK OVERRIDE ---
-      # Check all 18 one-turn child states directly
-      for move_idx in range(18):
-        child = Cube(neuralcube)
-        child.act(move_idx)
-        if child.isSolved():
-          # Override model distance with 0.0 for the winning move
-          predictions[move_idx] = 0.0
-      # ------------------------------------------
       choices = argsort(predictions)
       choice = neuralcube.history[state]
 
@@ -175,13 +166,10 @@ def pygame_loop(queue, stop_event):
       neuralcube.act(action)
 
 
-    if neuralcube.isSolved():
-      result = "0.0"
-    else:
-      result = neuralcube.toOneHot()
-      result = tensor(result, dtype=float32)
-      result = model(result).detach().squeeze() # Remove the batch dimension
-      result = str(float(result))
+    result = neuralcube.toOneHot()
+    result = tensor(result, dtype=float32)
+    result = model(result).detach().squeeze() # Remove the batch dimension
+    result = str(float(result))
 
     image = pygame.Surface.copy(original_image)
     pixel_array = pygame.PixelArray(image)
