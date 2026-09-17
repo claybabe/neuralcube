@@ -3,7 +3,7 @@
 import torch
 import torch.nn.functional as F
 from torch.nn import Linear, Sequential, ReLU, CrossEntropyLoss
-from torch.optim import SGD
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.cuda import empty_cache
 from pytorch_lightning import Trainer, LightningModule
@@ -228,7 +228,7 @@ class RubikDistancePredictor(LightningModule):
 
   def configure_optimizers(self):
     # Base LR is 1.0 because the lambda provides absolute LR values
-    optimizer = SGD(self.parameters(), lr=1.0)
+    optimizer = AdamW(self.parameters(), lr=1.0, weight_decay=1e-4)
 
     return {
       'optimizer': optimizer,
@@ -433,17 +433,15 @@ if __name__ == "__main__":
 
   for run in range(6):
 
-    train_batch_size = 256
-    val_batch_size = 24795
-    train_split = 0.98
-
-    max_lr = 1.2
-
     # Create a unique, synchronized run identifier
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"{timestamp}_run_{run}"
     run_dir = os.path.join("checkpoints", run_name)
     os.makedirs(run_dir, exist_ok=True)
+
+    train_batch_size = 256
+    val_batch_size = 24795
+    train_split = 0.98
 
     pdp = PathDatasetProcessor("assets/htm4.zip", start_idx="random", num_select=32, shift_offsets=[0, 4, 8, 12, 16], max_shared_prefix=5)
     paths = pdp.get_paths()
@@ -462,10 +460,13 @@ if __name__ == "__main__":
     datamodule.setup()
 
     # 3. Define Schedules
-    start_lr = 0
+    start_lr = 3e-5
     schedule_lr = [
-      (max_lr, 10),
-      (1e-5, 200)
+        (1.2e-3, 8),
+        (1.2e-3, 42),
+        (3e-4 , 35),
+        (5e-5, 65),
+        (1e-6, 30),
     ]
 
     tb_logger = TensorBoardLogger(
@@ -488,19 +489,19 @@ if __name__ == "__main__":
         hidden_dim=4096,
         train_ds_size=len(datamodule.train_ds),
         batch_size=datamodule.train_batch_size,
-        start_lr=start_lr,
+        start_lr=3e-5,
         schedule_lr=schedule_lr,
-        waiting_epochs=30,
-        finished_epochs=10,
-        target_ratio_pct=0.15,
-        cycle_ratios=[2, 3, 5, 4],
-        total_cycles=6,
-        warmup_rate=1.5,
-        decay_factor=0.85,
-        ema_epoch_fraction=0.1,
+        waiting_epochs=35,
+        finished_epochs=25,
+        target_ratio_pct=0.10,
+        cycle_ratios=[1, 3, 2, 2],
+        total_cycles=4,
+        warmup_rate=1.0,
+        decay_factor=0.90,
+        ema_epoch_fraction=0.3,
         augment=True,
         class_weights=None,#datamodule.class_weights,
-        grad_clip=5,
+        grad_clip=5.0,
     )
 
     # 5. Hire a Trainer
