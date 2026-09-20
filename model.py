@@ -27,10 +27,10 @@ class RubikDistancePredictor(LightningModule):
       peak_lr=1.2e-3,
       end_lr=1e-6,
       warmup_epochs=10,
+      consistency_delay_epochs=20,
       total_epochs=180,
       ramp_end_epoch=120,
-      baseline_ratio_pct=0.02,
-      target_ratio_pct=0.10,
+      target_ratio_pct=0.05,
       ema_epoch_fraction=0.3,
       augment=False,
       num_classes=21,
@@ -47,8 +47,8 @@ class RubikDistancePredictor(LightningModule):
     self.steps_per_epoch = int(np.ceil(train_ds_size / batch_size))
     self.total_steps = self.total_epochs * self.steps_per_epoch
 
-    # Initialize scheduling engine for Learning Rate
-    self.lr_schedule = SingleCycleCosineSchedule(
+    # Initialize Logarithmic Cosine scheduling engine for Learning Rate
+    self.lr_schedule = LogarithmicSingleCycleCosineSchedule(
         start_lr=self.hparams.start_lr,
         peak_lr=self.hparams.peak_lr,
         end_lr=self.hparams.end_lr,
@@ -60,9 +60,8 @@ class RubikDistancePredictor(LightningModule):
     # Initialize dynamic consistency scheduler
     self.consistency_schedule = AdaptiveSigmoidalConsistencySchedule(
         total_epochs=self.total_epochs,
-        warmup_epochs=self.hparams.warmup_epochs,
+        consistency_delay_epochs=self.hparams.consistency_delay_epochs,
         ramp_end_epoch=self.hparams.ramp_end_epoch,
-        baseline_ratio_pct=self.hparams.baseline_ratio_pct,
         target_ratio_pct=self.hparams.target_ratio_pct,
         ema_epoch_fraction=self.hparams.ema_epoch_fraction,
         steps_per_epoch=self.steps_per_epoch,
@@ -285,8 +284,8 @@ class RubikEnsemble:
       expected_value = (avg_probs * self.distances).sum(dim=-1)
       return expected_value
 
-class SingleCycleCosineSchedule:
-  """Quarter-wave cosine warmup to peak_lr, followed by continuous cosine decay to end_lr."""
+class LogarithmicSingleCycleCosineSchedule:
+  """Quarter-wave log-warmup to peak_lr, followed by continuous log-cosine decay to end_lr."""
   def __init__(
       self,
       start_lr: float,
@@ -296,9 +295,9 @@ class SingleCycleCosineSchedule:
       total_epochs: int,
       steps_per_epoch: int,
   ):
-    self.start_lr = start_lr
-    self.peak_lr = peak_lr
-    self.end_lr = end_lr
+    self.log_start_lr = math.log10(start_lr)
+    self.log_peak_lr = math.log10(peak_lr)
+    self.log_end_lr = math.log10(end_lr)
     self.warmup_steps = int(warmup_epochs * steps_per_epoch)
     self.total_steps = int(total_epochs * steps_per_epoch)
     self.decay_steps = max(1, self.total_steps - self.warmup_steps)
@@ -306,34 +305,31 @@ class SingleCycleCosineSchedule:
   def get_value(self, current_step: int) -> float:
     if current_step < self.warmup_steps:
       progress = current_step / max(1, self.warmup_steps)
-      # Quarter-wave cosine warmup (derivative -> 0 at peak_lr)
-      return self.start_lr + (self.peak_lr - self.start_lr) * math.sin(0.5 * math.pi * progress)
+      log_lr = self.log_start_lr + (self.log_peak_lr - self.log_start_lr) * math.sin(0.5 * math.pi * progress)
     else:
       progress = (current_step - self.warmup_steps) / self.decay_steps
       progress = min(max(progress, 0.0), 1.0)
-      # Half-wave cosine decay from peak_lr down to end_lr
-      return self.end_lr + 0.5 * (self.peak_lr - self.end_lr) * (1.0 + math.cos(math.pi * progress))
+      log_lr = self.log_end_lr + 0.5 * (self.log_peak_lr - self.log_end_lr) * (1.0 + math.cos(math.pi * progress))
+    
+    return 10.0 ** log_lr
 
 class AdaptiveSigmoidalConsistencySchedule:
-  """Three-phase consistency scheduler: Baseline Warmup -> Sigmoidal Ramp -> High-Precision Hold."""
+  """Three-phase consistency scheduler with late-stage decay: Delay -> Sigmoidal Ramp -> Late-Stage Cosine Decay."""
 
   def __init__(
       self,
       total_epochs=180,
-      warmup_epochs=10,
+      consistency_delay_epochs=30,
       ramp_end_epoch=120,
-      baseline_ratio_pct=0.02,
-      target_ratio_pct=0.10,
+      target_ratio_pct=0.05,
       ema_epoch_fraction=0.3,
       steps_per_epoch=36506,
   ):
     self.total_epochs = total_epochs
-    self.warmup_epochs = warmup_epochs
+    self.delay_epochs = consistency_delay_epochs
     self.ramp_end_epoch = ramp_end_epoch
-    self.baseline_ratio_pct = baseline_ratio_pct
     self.target_ratio_pct = target_ratio_pct
 
-    # Step-based exponential smoothing for loss ratio tracking
     steps_in_fraction = max(1.0, ema_epoch_fraction * steps_per_epoch)
     self.alpha = 1.0 - math.exp(-1.0 / steps_in_fraction)
 
@@ -350,27 +346,35 @@ class AdaptiveSigmoidalConsistencySchedule:
       self.ema_kl = self.alpha * float(raw_kl_loss) + (1.0 - self.alpha) * self.ema_kl
 
   def get_weight(self, current_epoch: float) -> float:
-    """Calculates instantaneous c_weight based on target ratio percentage and current EMA dynamics."""
+    """Calculates instantaneous c_weight with zero baseline and smooth late-stage decay."""
     if self.ema_sup is None or self.ema_kl is None or self.ema_kl <= 1e-8:
       return 0.0
 
-    # Determine desired loss target percentage based on phase
-    if current_epoch < self.warmup_epochs:
-      # Phase 1: Baseline Floor
-      desired_pct = self.baseline_ratio_pct
-    elif current_epoch < self.ramp_end_epoch:
-      # Phase 2: Sigmoidal (Hermite smoothstep) Ramp
-      tau = (current_epoch - self.warmup_epochs) / max(1e-5, (self.ramp_end_epoch - self.warmup_epochs))
+    # Phase 0: Centroid Alignment Delay (c_weight = 0.0)
+    if current_epoch < self.delay_epochs:
+      return 0.0
+
+    # Phase 1: Smooth Sigmoidal (Hermite smoothstep) Ramp (0.0 to target_ratio_pct)
+    if current_epoch < self.ramp_end_epoch:
+      tau = (current_epoch - self.delay_epochs) / max(1e-5, (self.ramp_end_epoch - self.delay_epochs))
       tau = min(max(tau, 0.0), 1.0)
       smooth_factor = 3.0 * (tau ** 2) - 2.0 * (tau ** 3)
-      desired_pct = self.baseline_ratio_pct + (self.target_ratio_pct - self.baseline_ratio_pct) * smooth_factor
+      desired_pct = self.target_ratio_pct * smooth_factor
     else:
-      # Phase 3: High-Precision Hold
       desired_pct = self.target_ratio_pct
 
-    # Convert ratio percentage to raw scalar c_weight given EMA loss states
+    # Late-Stage Damping Factor: Soft cosine decay after ramp_end_epoch
+    # Drops consistency smoothly in final 33% of run to avoid late ratio blowup
+    if current_epoch > self.ramp_end_epoch:
+      decay_progress = (current_epoch - self.ramp_end_epoch) / max(1e-5, (self.total_epochs - self.ramp_end_epoch))
+      decay_progress = min(max(decay_progress, 0.0), 1.0)
+      damping = 0.5 * (1.0 + math.cos(math.pi * decay_progress))
+    else:
+      damping = 1.0
+
     base_factor = desired_pct / (1.0 - desired_pct)
-    return base_factor * (self.ema_sup / self.ema_kl)
+    raw_weight = base_factor * (self.ema_sup / self.ema_kl) * damping
+    return raw_weight
 
 if __name__ == "__main__":  
   # --- SIGNAL HANDLER SETUP ---
@@ -400,7 +404,7 @@ if __name__ == "__main__":
     endpoints = pdp.get_endpoints()
 
     manager = RubikManager()
-    manager.generate_dataset(paths.tolist(), deep_layers=3)
+    manager.generate_dataset(paths.tolist(), deep_layers=2)
   
     # Save endpoints directly in the run directory for standalone evaluation
     np.save(os.path.join(run_dir, "endpoints.npy"), endpoints)
@@ -434,11 +438,11 @@ if __name__ == "__main__":
         start_lr=3e-5,
         peak_lr=1.2e-3,
         end_lr=1e-6,
-        warmup_epochs=5,
-        total_epochs=100,
-        ramp_end_epoch=85,
-        baseline_ratio_pct=0.02,
-        target_ratio_pct=0.10,
+        warmup_epochs=10,
+        consistency_delay_epochs=30,
+        total_epochs=180,
+        ramp_end_epoch=120,
+        target_ratio_pct=0.05,
         ema_epoch_fraction=0.3,
         augment=True,
         class_weights=None,#datamodule.class_weights,
