@@ -16,23 +16,6 @@ import datetime
 import os
 import math
 
-class LinearScheduledValue:
-  """Schedules a parameter value linearly from start_val to end_val across specified epochs."""
-  def __init__(self, start_val: float, end_val: float, delay_epochs: float, ramp_end_epoch: float):
-    self.start_val = start_val
-    self.end_val = end_val
-    self.delay_epochs = delay_epochs
-    self.ramp_end_epoch = ramp_end_epoch
-
-  def get_value(self, current_epoch: float) -> float:
-    if current_epoch < self.delay_epochs:
-      return self.start_val
-    if current_epoch >= self.ramp_end_epoch:
-      return self.end_val
-    progress = (current_epoch - self.delay_epochs) / max(1e-5, (self.ramp_end_epoch - self.delay_epochs))
-    return self.start_val + progress * (self.end_val - self.start_val)
-
-
 class RubikDistancePredictor(LightningModule):
 
   def __init__(
@@ -175,8 +158,8 @@ class RubikDistancePredictor(LightningModule):
 
     if self.hparams.augment:
       k_sub = self.hparams.k_rotations
-      logits_aug = self.forward(x, return_aug=True, k_sub=k_sub)
-      log_probs = F.log_softmax(logits_aug, dim=-1)
+      logits_aug = self.forward(x, return_aug=True, k_sub=k_sub)  # (B, K, C)
+      log_probs = F.log_softmax(logits_aug, dim=-1)               # (B, K, C)
 
       # 1. Supervision Loss
       y_expanded = y.unsqueeze(1).repeat(1, k_sub).view(-1).long()
@@ -186,28 +169,30 @@ class RubikDistancePredictor(LightningModule):
           weight=self.loss_weights,
       )
 
-      # 2. Consistency Target with Ground-Truth Blending
+      # 2. Compute Target Probabilities and Blended Target
       with torch.no_grad():
-        sub_centroid = torch.softmax(logits_aug, dim=-1).mean(dim=1).detach()
-        y_onehot = F.one_hot(y.long(), num_classes=self.hparams.num_classes).float()
+        sub_centroid = torch.softmax(logits_aug, dim=-1).mean(dim=1).detach() # (B, C)
+        y_onehot = F.one_hot(y.long(), num_classes=self.hparams.num_classes).float() # (B, C)
         
-        # Blend sub-centroid ensemble with ground truth
+        # Blend sub-centroid ensemble with ground truth target
         blended_target = (1.0 - gamma) * sub_centroid + gamma * y_onehot
         blended_target = blended_target.clamp(min=1e-7)
 
-      consistency_loss = F.kl_div(
-          log_probs,
-          blended_target.unsqueeze(1).expand_as(log_probs),
-          reduction='batchmean',
-      )
+      # 3. Flatten tensors to (B * K, C) to ensure correct batchmean KL divergence scaling
+      log_probs_flat = log_probs.view(-1, self.hparams.num_classes)
+      centroid_flat = sub_centroid.unsqueeze(1).repeat(1, k_sub, 1).view(-1, self.hparams.num_classes)
+      blended_flat = blended_target.unsqueeze(1).repeat(1, k_sub, 1).view(-1, self.hparams.num_classes)
 
-      # Record raw losses for EMA calculation
+      raw_consistency_loss = F.kl_div(log_probs_flat, centroid_flat, reduction='batchmean')
+      blended_consistency_loss = F.kl_div(log_probs_flat, blended_flat, reduction='batchmean')
+
+      # Record blended loss for EMA calculation
       self.consistency_schedule.record_losses(
-          sup_loss=sup_loss.item(), raw_kl_loss=consistency_loss.item()
+          sup_loss=sup_loss.item(), raw_kl_loss=blended_consistency_loss.item()
       )
 
-      # 3. Dynamic Weighting with HARD CAP (Guaranteeing target ratio is never exceeded)
-      unclipped_weighted_consistency = c_weight * consistency_loss
+      # 4. Dynamic Weighting with HARD CAP (Guaranteeing target ratio is never exceeded)
+      unclipped_weighted_consistency = c_weight * blended_consistency_loss
       max_allowed_consistency = (sup_loss + 1e-8) * self.hparams.target_ratio_pct
       
       weighted_consistency = torch.minimum(
@@ -216,12 +201,13 @@ class RubikDistancePredictor(LightningModule):
       
       loss = sup_loss + weighted_consistency
 
-      # 4. Compute Loss Ratio (%)
+      # 5. Compute Loss Ratio (%)
       loss_ratio = (weighted_consistency / (sup_loss + 1e-8)) * 100.0
 
       # Logging
       self.log('loss/sup_loss', sup_loss, on_step=True, on_epoch=True)
-      self.log('loss/consistency_loss_raw', consistency_loss, on_step=True, on_epoch=True)
+      self.log('loss/consistency_loss_raw', raw_consistency_loss, on_step=True, on_epoch=True)
+      self.log('loss/consistency_loss_blended', blended_consistency_loss, on_step=True, on_epoch=True)
       self.log('loss/weighted_consistency', weighted_consistency, on_step=True, on_epoch=True)
       self.log('loss/consistency_ratio_pct', loss_ratio, on_step=True, on_epoch=True, prog_bar=True)
       self.log('params/gamma', gamma, on_step=True, prog_bar=False)
@@ -386,6 +372,22 @@ class AdaptiveSigmoidalConsistencySchedule:
     raw_weight = base_factor * (self.ema_sup / self.ema_kl)
     return raw_weight
 
+class LinearScheduledValue:
+  """Schedules a parameter value linearly from start_val to end_val across specified epochs."""
+  def __init__(self, start_val: float, end_val: float, delay_epochs: float, ramp_end_epoch: float):
+    self.start_val = start_val
+    self.end_val = end_val
+    self.delay_epochs = delay_epochs
+    self.ramp_end_epoch = ramp_end_epoch
+
+  def get_value(self, current_epoch: float) -> float:
+    if current_epoch < self.delay_epochs:
+      return self.start_val
+    if current_epoch >= self.ramp_end_epoch:
+      return self.end_val
+    progress = (current_epoch - self.delay_epochs) / max(1e-5, (self.ramp_end_epoch - self.delay_epochs))
+    return self.start_val + progress * (self.end_val - self.start_val)
+
 
 if __name__ == "__main__":  
   import signal
@@ -440,10 +442,10 @@ if __name__ == "__main__":
         peak_lr=1.2e-3,
         end_lr=1e-6,
         warmup_epochs=10,
-        consistency_delay_epochs=30,
+        consistency_delay_epochs=0,
         total_epochs=180,
         ramp_end_epoch=120,
-        target_ratio_pct=0.05,
+        target_ratio_pct=0.12,
         ema_epoch_fraction=0.3,
         k_rotations=8,
         gamma_start=0.35,
