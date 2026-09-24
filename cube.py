@@ -1,9 +1,5 @@
 # 2026 - copyright - all rights reserved - clayton thomas baber
 
-import zipfile
-import io
-from tqdm import tqdm
-from collections import Counter
 
 class Cube():
   solved = tuple(range(54))
@@ -88,6 +84,69 @@ class Cube():
     "B2" : 16,
     "B1" : 17
   }
+
+  anti_rotations = (0, 3, 2, 1, 6, 5, 4, 9, 8, 7, 18, 19, 12, 13, 14, 15, 16, 22, 10, 11, 21, 20, 17, 23)
+
+  action_mirror = (
+      9, 10, 11,   # L1, L2, L3 -> R3, R2, R1
+      5,  4,  3,   # U1, U2, U3 -> U3, U2, U1
+      8,  7,  6,   # F1, F2, F3 -> F3, F2, F1
+      0,  1,  2,   # R3, R2, R1 -> L1, L2, L3
+      14, 13, 12,   # D3, D2, D1 -> D1, D2, D3
+      17, 16, 15    # B3, B2, B1 -> B1, B2, B3
+  )
+
+  action_transforms = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17),
+    (3, 4, 5, 11, 10, 9, 6, 7, 8, 12, 13, 14, 2, 1, 0, 15, 16, 17),
+    (11, 10, 9, 14, 13, 12, 6, 7, 8, 2, 1, 0, 5, 4, 3, 15, 16, 17),
+    (14, 13, 12, 0, 1, 2, 6, 7, 8, 5, 4, 3, 9, 10, 11, 15, 16, 17),
+    (0, 1, 2, 6, 7, 8, 14, 13, 12, 9, 10, 11, 15, 16, 17, 5, 4, 3),
+    (0, 1, 2, 14, 13, 12, 17, 16, 15, 9, 10, 11, 5, 4, 3, 8, 7, 6),
+    (0, 1, 2, 17, 16, 15, 3, 4, 5, 9, 10, 11, 8, 7, 6, 12, 13, 14),
+    (17, 16, 15, 3, 4, 5, 0, 1, 2, 8, 7, 6, 12, 13, 14, 9, 10, 11),
+    (11, 10, 9, 3, 4, 5, 17, 16, 15, 2, 1, 0, 12, 13, 14, 8, 7, 6),
+    (6, 7, 8, 3, 4, 5, 11, 10, 9, 15, 16, 17, 12, 13, 14, 2, 1, 0),
+    (3, 4, 5, 6, 7, 8, 0, 1, 2, 12, 13, 14, 15, 16, 17, 9, 10, 11),
+    (6, 7, 8, 11, 10, 9, 14, 13, 12, 15, 16, 17, 2, 1, 0, 5, 4, 3),
+    (11, 10, 9, 6, 7, 8, 3, 4, 5, 2, 1, 0, 15, 16, 17, 12, 13, 14),
+    (6, 7, 8, 14, 13, 12, 0, 1, 2, 15, 16, 17, 5, 4, 3, 9, 10, 11),
+    (3, 4, 5, 0, 1, 2, 17, 16, 15, 12, 13, 14, 9, 10, 11, 8, 7, 6),
+    (11, 10, 9, 17, 16, 15, 14, 13, 12, 2, 1, 0, 8, 7, 6, 5, 4, 3),
+    (14, 13, 12, 11, 10, 9, 17, 16, 15, 5, 4, 3, 2, 1, 0, 8, 7, 6),
+    (14, 13, 12, 6, 7, 8, 11, 10, 9, 5, 4, 3, 15, 16, 17, 2, 1, 0),
+    (6, 7, 8, 0, 1, 2, 3, 4, 5, 15, 16, 17, 9, 10, 11, 12, 13, 14),
+    (14, 13, 12, 17, 16, 15, 0, 1, 2, 5, 4, 3, 8, 7, 6, 9, 10, 11),
+    (3, 4, 5, 17, 16, 15, 11, 10, 9, 12, 13, 14, 8, 7, 6, 2, 1, 0),
+    (17, 16, 15, 0, 1, 2, 14, 13, 12, 8, 7, 6, 9, 10, 11, 5, 4, 3),
+    (17, 16, 15, 11, 10, 9, 3, 4, 5, 8, 7, 6, 2, 1, 0, 12, 13, 14),
+    (17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
+    (9, 10, 11, 5, 4, 3, 8, 7, 6, 0, 1, 2, 14, 13, 12, 17, 16, 15),
+    (12, 13, 14, 9, 10, 11, 8, 7, 6, 3, 4, 5, 0, 1, 2, 17, 16, 15),
+    (2, 1, 0, 12, 13, 14, 8, 7, 6, 11, 10, 9, 3, 4, 5, 17, 16, 15),
+    (5, 4, 3, 2, 1, 0, 8, 7, 6, 14, 13, 12, 11, 10, 9, 17, 16, 15),
+    (9, 10, 11, 8, 7, 6, 12, 13, 14, 0, 1, 2, 17, 16, 15, 3, 4, 5),
+    (9, 10, 11, 12, 13, 14, 15, 16, 17, 0, 1, 2, 3, 4, 5, 6, 7, 8),
+    (9, 10, 11, 15, 16, 17, 5, 4, 3, 0, 1, 2, 6, 7, 8, 14, 13, 12),
+    (8, 7, 6, 5, 4, 3, 2, 1, 0, 17, 16, 15, 14, 13, 12, 11, 10, 9),
+    (2, 1, 0, 5, 4, 3, 15, 16, 17, 11, 10, 9, 14, 13, 12, 6, 7, 8),
+    (15, 16, 17, 5, 4, 3, 9, 10, 11, 6, 7, 8, 14, 13, 12, 0, 1, 2),
+    (12, 13, 14, 8, 7, 6, 2, 1, 0, 3, 4, 5, 17, 16, 15, 11, 10, 9),
+    (15, 16, 17, 9, 10, 11, 12, 13, 14, 6, 7, 8, 0, 1, 2, 3, 4, 5),
+    (2, 1, 0, 8, 7, 6, 5, 4, 3, 11, 10, 9, 17, 16, 15, 14, 13, 12),
+    (15, 16, 17, 12, 13, 14, 2, 1, 0, 6, 7, 8, 3, 4, 5, 11, 10, 9),
+    (12, 13, 14, 2, 1, 0, 15, 16, 17, 3, 4, 5, 11, 10, 9, 6, 7, 8),
+    (2, 1, 0, 15, 16, 17, 12, 13, 14, 11, 10, 9, 6, 7, 8, 3, 4, 5),
+    (5, 4, 3, 9, 10, 11, 15, 16, 17, 14, 13, 12, 0, 1, 2, 6, 7, 8),
+    (5, 4, 3, 8, 7, 6, 9, 10, 11, 14, 13, 12, 17, 16, 15, 0, 1, 2),
+    (15, 16, 17, 2, 1, 0, 5, 4, 3, 6, 7, 8, 11, 10, 9, 14, 13, 12),
+    (5, 4, 3, 15, 16, 17, 2, 1, 0, 14, 13, 12, 6, 7, 8, 11, 10, 9),
+    (12, 13, 14, 15, 16, 17, 9, 10, 11, 3, 4, 5, 6, 7, 8, 0, 1, 2),
+    (8, 7, 6, 2, 1, 0, 12, 13, 14, 17, 16, 15, 11, 10, 9, 3, 4, 5),
+    (8, 7, 6, 9, 10, 11, 5, 4, 3, 17, 16, 15, 0, 1, 2, 14, 13, 12),
+    (8, 7, 6, 12, 13, 14, 9, 10, 11, 17, 16, 15, 3, 4, 5, 0, 1, 2)
+  )
+
 
   bipolar_map = (
       (1, 0, 0),    # 0: Up (White)
@@ -217,17 +276,21 @@ if __name__ == "__main__":
   print(f"All notation tests passed. Unique states across notation cycles: {len(all_notation_states)}\n")
 
 
-  # 2. Rotation Cycle Tests
-  print("--- Testing Rotations ---")
+  # 2. Rotation Cycle Tests & Anti-Rotation Mapping
+  print("--- Testing Rotations & Computing Anti-Rotations ---")
   all_rotation_states = set()
   
-  for idx, rotation in enumerate(Cube.rotations):
+  # Store mapping of rotation index -> rotation state tuple
+  rot_state_map = {}
+  
+  for idx in range(len(Cube.rotations)):
     cube = Cube()
     initial_state = cube.getState()
     
     # Verify rotation preserves solved state while altering internal representation
     cube.rotate(idx)
     assert cube.isSolved(), f"Rotation {idx} broke isSolved() state"
+    rot_state_map[idx] = cube.getState()
     
     if idx == 0:
       # Index 0 is the identity rotation
@@ -238,7 +301,7 @@ if __name__ == "__main__":
       assert cube.getState() != initial_state, f"Rotation {idx} failed to change state from fresh cube"
       
       cycle_states = [cube.getState()]
-      # Perform full cycle back to initial state representation (range(54))
+      # Perform full cycle back to initial state representation
       while cube.getState() != initial_state:
         cube.rotate(idx)
         assert cube.isSolved(), f"Rotation {idx} broke isSolved() during cycling"
@@ -258,8 +321,54 @@ if __name__ == "__main__":
       
     print(f"Rotation {idx:2d} | Cycle Length: {cycle_length} | PASSED")
 
+  # Compute anti_rotations map by finding which rotation undoes another back to identity
+  anti_rotations_map = {}
+  identity_state = rot_state_map[0]
+
+  for r1_idx, r1_state in rot_state_map.items():
+    found_inverse = False
+    for r2_idx in range(len(Cube.rotations)):
+      cube = Cube()
+      cube.setState(r1_state)
+      cube.rotate(r2_idx)
+      if cube.getState() == identity_state:
+        anti_rotations_map[r1_idx] = r2_idx
+        found_inverse = True
+        break
+    assert found_inverse, f"Could not find inverse rotation for rotation {r1_idx}"
+
+  anti_rotations_tuple = tuple(anti_rotations_map[i] for i in range(len(Cube.rotations)))
+
+  assert Cube.anti_rotations == anti_rotations_tuple, f"Cube.anti_rotations is not equal to computed anti_rotations"
+
   print(f"All rotation tests passed. Unique state representations across non-identity rotations: {len(all_rotation_states)}\n")
 
+  action_transforms_48 = []
+
+  # Rows 0..23: Proper Rotations (SO(3))
+  for rot_idx in range(len(Cube.rotations)):
+      row = []
+      for act_idx in range(len(Cube.actions)):
+          cube = Cube()
+          cube.rotate(rot_idx)
+          cube.act(act_idx)
+          cube.rotate(Cube.anti_rotations[rot_idx])
+          row.append(Cube.actions.index(tuple(cube.state)))
+      action_transforms_48.append(tuple(row))
+
+  # Rows 24..47: Mirrored Rotations (O_h \ SO(3))
+  for rot_idx in range(len(Cube.rotations)):
+      row = []
+      for act_idx in range(len(Cube.actions)):
+          cube = Cube()
+          cube.rotate(rot_idx)
+          cube.act(Cube.action_mirror[act_idx])
+          cube.rotate(Cube.anti_rotations[rot_idx])
+          row.append(Cube.actions.index(tuple(cube.state)))
+      action_transforms_48.append(tuple(row))
+
+  assert tuple(action_transforms_48) == Cube.action_transforms, "Action Transforms incorrectly defined"
+  print("--- Action Transforms correctly defined ---\n")
 
   # 3. Bipolar Encoding Tests
   print("--- Testing Bipolar Encodings ---")
@@ -295,50 +404,5 @@ if __name__ == "__main__":
     assert dot_adj == 0, f"Adjacent pair ({c1}, {c2}) has non-uniform dot product {dot_adj} (expected 0)"
 
   print("All bipolar encoding tests passed.\n")
- 
-  # 4. Path Cycle Tests via htm4.zip
-  print("--- Testing Paths in htm4.zip ---")
-  path_cycle_counts = Counter()
-  action_distribution = Counter()
-
-  with zipfile.ZipFile("assets/htm4.zip", "r") as zf:
-    namelist = zf.namelist()
-    txt_files = [f for f in namelist if f.endswith('.txt') and not f.startswith('__MACOSX')]
-    target_filename = txt_files[0] if txt_files else namelist[0]
-
-    with zf.open(target_filename, 'r') as f:
-      text_stream = io.TextIOWrapper(f, encoding='utf-8')
-      for line in tqdm(text_stream, desc=f"Testing paths in '{target_filename}'", unit="lines"):
-        line = line.strip()
-        if not line:
-          continue
-
-        # Parse two-character notation tokens into action indices
-        actions_str = [line[i:i+2] for i in range(0, len(line), 2)]
-        path = [Cube.notation[action] for action in actions_str]
-
-        # Track action distribution
-        for action in path:
-          action_distribution[action] += 1
-
-        # Determine path cycle length
-        cube = Cube()
-        cube.algo(path)
-
-        cycle_len = 1
-        while not cube.isSolved():
-          cube.algo(path)
-          cycle_len += 1
-
-        path_cycle_counts[cycle_len] += 1
-
-  print("Path Cycle Length Distribution:")
-  for length, count in sorted(path_cycle_counts.items()):
-    print(f"  Length {length:3d}: {count} paths")
-
-  print("\nAction Distribution:")
-  for action, count in sorted(action_distribution.items()):
-    s = "  " if action < 10 else " "
-    print(f"{s}{action}: {count}")
 
   print("\nAll tests complete successfully.")
