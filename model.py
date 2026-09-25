@@ -9,7 +9,7 @@ from torch.cuda import empty_cache
 from pytorch_lightning import Trainer, LightningModule
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
-from dataset import RubikDistanceDataModule, RubikManager, PathDatasetProcessor
+from dataset import RubikDataModule, DatasetBuilder, ArchiveProcessor
 from cube import Cube
 import numpy as np
 import datetime
@@ -27,6 +27,8 @@ class RubikDistancePredictor(LightningModule):
       peak_lr=1.2e-3,
       end_lr=1e-6,
       warmup_epochs=10,
+      warmup_power=0.5, # < 1.0 accelerates early warmup ramp
+      decay_power=0.35, # < 1.0 holds high LR longer for a broader shoulder
       consistency_delay_epochs=20,
       total_epochs=180,
       ramp_end_epoch=120,
@@ -60,6 +62,8 @@ class RubikDistancePredictor(LightningModule):
         warmup_epochs=self.hparams.warmup_epochs,
         total_epochs=self.total_epochs,
         steps_per_epoch=self.steps_per_epoch,
+        warmup_power=self.hparams.warmup_power,
+        decay_power=self.hparams.decay_power,
     )
 
     # Initialize dynamic consistency scheduler
@@ -156,13 +160,19 @@ class RubikDistancePredictor(LightningModule):
     c_weight = self._get_current_consistency_weight()
     gamma = self._get_current_gamma()
 
+    # Convert soft / density / one-hot targets to class indices for CrossEntropy
+    if y.dim() > 1:
+      y_labels = y.argmax(dim=-1).long()
+    else:
+      y_labels = y.long()
+
     if self.hparams.augment:
       k_sub = self.hparams.k_rotations
       logits_aug = self.forward(x, return_aug=True, k_sub=k_sub)  # (B, K, C)
       log_probs = F.log_softmax(logits_aug, dim=-1)               # (B, K, C)
 
       # 1. Supervision Loss
-      y_expanded = y.unsqueeze(1).repeat(1, k_sub).view(-1).long()
+      y_expanded = y_labels.unsqueeze(1).repeat(1, k_sub).view(-1).long()
       sup_loss = F.cross_entropy(
           logits_aug.view(-1, self.hparams.num_classes),
           y_expanded,
@@ -172,7 +182,7 @@ class RubikDistancePredictor(LightningModule):
       # 2. Compute Target Probabilities and Blended Target
       with torch.no_grad():
         sub_centroid = torch.softmax(logits_aug, dim=-1).mean(dim=1).detach() # (B, C)
-        y_onehot = F.one_hot(y.long(), num_classes=self.hparams.num_classes).float() # (B, C)
+        y_onehot = F.one_hot(y_labels, num_classes=self.hparams.num_classes).float() # (B, C)
         
         # Blend sub-centroid ensemble with ground truth target
         blended_target = (1.0 - gamma) * sub_centroid + gamma * y_onehot
@@ -205,23 +215,29 @@ class RubikDistancePredictor(LightningModule):
       loss_ratio = (weighted_consistency / (sup_loss + 1e-8)) * 100.0
 
       # Logging
-      self.log('loss/sup_loss', sup_loss, on_step=True, on_epoch=True)
-      self.log('loss/consistency_loss_raw', raw_consistency_loss, on_step=True, on_epoch=True)
-      self.log('loss/consistency_loss_blended', blended_consistency_loss, on_step=True, on_epoch=True)
-      self.log('loss/weighted_consistency', weighted_consistency, on_step=True, on_epoch=True)
-      self.log('loss/consistency_ratio_pct', loss_ratio, on_step=True, on_epoch=True, prog_bar=True)
+      self.log('loss/sup_loss', sup_loss, on_step=True, on_epoch=True, prog_bar=False)
+      self.log('loss/consistency_loss_raw', raw_consistency_loss, on_step=True, on_epoch=True, prog_bar=False)
+      self.log('loss/consistency_loss_blended', blended_consistency_loss, on_step=True, on_epoch=True, prog_bar=False)
+      self.log('loss/weighted_consistency', weighted_consistency, on_step=True, on_epoch=True, prog_bar=False)
+      self.log('loss/consistency_ratio_pct', loss_ratio, on_step=True, on_epoch=True, prog_bar=False)
       self.log('params/gamma', gamma, on_step=True, prog_bar=False)
     else:
       logits = self.network(x)
-      loss = F.cross_entropy(logits, y.long())
+      loss = F.cross_entropy(logits, y_labels)
 
     self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
-    self.log('c_weight', c_weight, on_step=True, prog_bar=True)
+    self.log('c_weight', c_weight, on_step=True, prog_bar=False)
     return loss
 
   def validation_step(self, batch, batch_idx):
     x, y = batch
-    y_long = torch.clamp(y.long(), 0, self.hparams.num_classes - 1)
+
+    if y.dim() > 1:
+      y_long = y.argmax(dim=-1).long()
+      y_scalar = y.argmax(dim=-1).float()
+    else:
+      y_long = torch.clamp(y.long(), 0, self.hparams.num_classes - 1)
+      y_scalar = y.float()
     
     probs = self.forward(x) 
     
@@ -232,11 +248,11 @@ class RubikDistancePredictor(LightningModule):
     
     distances = torch.arange(self.hparams.num_classes, device=self.device).float()
     expected_distances = (probs * distances).sum(dim=-1)
-    ev_error = torch.abs(expected_distances - y.float()).mean()
+    ev_error = torch.abs(expected_distances - y_scalar).mean()
     
     self.log('val_loss', val_loss, on_epoch=True, prog_bar=True)
-    self.log('val_acc', acc, on_epoch=True, prog_bar=True)
-    self.log('val_ev_error', ev_error, on_epoch=True, prog_bar=True)
+    self.log('val_acc', acc, on_epoch=True, prog_bar=False)
+    self.log('val_ev_error', ev_error, on_epoch=True, prog_bar=False)
 
     return val_loss
 
@@ -304,6 +320,8 @@ class LogarithmicSingleCycleCosineSchedule:
       warmup_epochs: int,
       total_epochs: int,
       steps_per_epoch: int,
+      warmup_power: float = 0.5,
+      decay_power: float = 0.35,
   ):
     self.log_start_lr = math.log10(start_lr)
     self.log_peak_lr = math.log10(peak_lr)
@@ -311,15 +329,22 @@ class LogarithmicSingleCycleCosineSchedule:
     self.warmup_steps = int(warmup_epochs * steps_per_epoch)
     self.total_steps = int(total_epochs * steps_per_epoch)
     self.decay_steps = max(1, self.total_steps - self.warmup_steps)
+    self.warmup_power = warmup_power
+    self.decay_power = decay_power
 
   def get_value(self, current_step: int) -> float:
     if current_step < self.warmup_steps:
       progress = current_step / max(1, self.warmup_steps)
+      # Shape the warmup using warmup_power exponent (p)
+      progress = progress ** self.warmup_power
       log_lr = self.log_start_lr + (self.log_peak_lr - self.log_start_lr) * math.sin(0.5 * math.pi * progress)
     else:
       progress = (current_step - self.warmup_steps) / self.decay_steps
       progress = min(max(progress, 0.0), 1.0)
-      log_lr = self.log_end_lr + 0.5 * (self.log_peak_lr - self.log_end_lr) * (1.0 + math.cos(math.pi * progress))
+      # Shape the cosine decay using decay_power exponent (q)
+      cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+      shaped_decay = cosine_decay ** self.decay_power
+      log_lr = self.log_end_lr + (self.log_peak_lr - self.log_end_lr) * shaped_decay
     
     return 10.0 ** log_lr
 
@@ -396,26 +421,45 @@ if __name__ == "__main__":
 
   signal.signal(signal.SIGUSR1, manual_skip_handler)
 
+  ARCHIVE_PATH = "assets/htm4.zip"
+  MASTER_DIR = "data/master_archive_data"
+  
+  # Ensure base archive processing and dataset construction exist
+  if not os.path.exists(os.path.join(MASTER_DIR, "master_meta.json")):
+    ArchiveProcessor.process_archive(ARCHIVE_PATH, output_dir=MASTER_DIR, chunk_size=50000)
+
   for run in range(6):
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"{timestamp}_run_{run}"
     run_dir = os.path.join("checkpoints", run_name)
     os.makedirs(run_dir, exist_ok=True)
 
-    train_batch_size = 256
-    val_batch_size = 24795
-    train_split = 0.98
+    builder = DatasetBuilder(MASTER_DIR)
+    builder.build_dataset(
+      output_dir=run_dir,
+      cycle_filter=2,
+      num_select=18,
+      max_shared_prefix=3,
+      shift_offsets=[0, 4, 8, 12, 16],
+      transform_indices=list(range(48)),
+      off_path_penalty=0.1,
+      branch_depth_k=2,
+      random_seed=None
+    )
 
-    pdp = PathDatasetProcessor("assets/htm4.zip", start_idx="random", num_select=32, shift_offsets=[0, 4, 8, 12, 16], max_shared_prefix=5)
-    paths = pdp.get_paths()
-    endpoints = pdp.get_endpoints()
 
-    manager = RubikManager()
-    manager.generate_dataset(paths.tolist(), deep_layers=2)
-  
-    np.save(os.path.join(run_dir, "endpoints.npy"), endpoints)
+    train_batch_size = 768
+    num_classes = 21
 
-    datamodule = RubikDistanceDataModule(train_batch_size=train_batch_size, val_batch_size=val_batch_size, train_split=train_split)
+    datamodule = RubikDataModule(
+        data_dir=run_dir,
+        input_type="onehot",
+        target_type="onehot",
+        batch_size=train_batch_size,
+        num_workers=4,
+        num_classes=num_classes,
+        enable_online_rotations=False
+    )
     datamodule.setup()
 
     tb_logger = TensorBoardLogger(
@@ -437,15 +481,17 @@ if __name__ == "__main__":
     model = RubikDistancePredictor(
         hidden_dim=4096,
         train_ds_size=len(datamodule.train_ds),
-        batch_size=datamodule.train_batch_size,
+        batch_size=datamodule.batch_size,
         start_lr=3e-5,
         peak_lr=1.2e-3,
         end_lr=1e-6,
         warmup_epochs=10,
+        warmup_power=0.5,
+        decay_power=1.25,
         consistency_delay_epochs=0,
         total_epochs=180,
-        ramp_end_epoch=120,
-        target_ratio_pct=0.12,
+        ramp_end_epoch=60,
+        target_ratio_pct=0.08,
         ema_epoch_fraction=0.3,
         k_rotations=8,
         gamma_start=0.35,
@@ -453,6 +499,7 @@ if __name__ == "__main__":
         gamma_delay_epochs=30,
         gamma_ramp_end_epoch=120,
         augment=True,
+        num_classes=num_classes,
         class_weights=None,
         grad_clip=5.0,
     )
