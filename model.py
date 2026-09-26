@@ -15,6 +15,7 @@ import numpy as np
 import datetime
 import os
 import math
+import json
 
 class RubikDistancePredictor(LightningModule):
 
@@ -438,7 +439,7 @@ if __name__ == "__main__":
     builder.build_dataset(
       output_dir=run_dir,
       cycle_filter=2,
-      num_select=18,
+      num_select=16,
       max_shared_prefix=3,
       shift_offsets=[0, 4, 8, 12, 16],
       transform_indices=list(range(48)),
@@ -449,7 +450,9 @@ if __name__ == "__main__":
 
 
     train_batch_size = 768
-    num_classes = 21
+    with open(os.path.join(run_dir, "dataset_meta.json"), "r") as f:
+        meta = json.load(f)
+    num_classes = meta["num_classes"]
 
     datamodule = RubikDataModule(
         data_dir=run_dir,
@@ -500,7 +503,7 @@ if __name__ == "__main__":
         gamma_ramp_end_epoch=120,
         augment=True,
         num_classes=num_classes,
-        class_weights=None,
+        class_weights=datamodule.class_weights,
         grad_clip=5.0,
     )
 
@@ -512,6 +515,7 @@ if __name__ == "__main__":
       callbacks=[lr_monitor, checkpoint_callback],
       precision="16-mixed",
       gradient_clip_val=model.hparams.grad_clip,
+      val_check_interval=0.5
     )
 
     try:
