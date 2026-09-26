@@ -218,7 +218,7 @@ if __name__ == "__main__":
   root.withdraw()  # Hide root tkinter window
 
   model_paths = []
-  all_endpoints = []
+  all_endpoints_lists = []
 
   num_models = int(input("number of models? "))
   for _ in range(num_models):
@@ -237,20 +237,28 @@ if __name__ == "__main__":
     chosen_ckpt = sorted(best_ckpts)[-1] if best_ckpts else ckpts[0]
     model_paths.append(chosen_ckpt)
 
-    # 2. Load Endpoints (.npy)
-    endpoints_path = os.path.join(run_dir, "endpoints.npy")
+    # 2. Load Endpoints (.dat binary memmap produced by dataset.py)
+    endpoints_path = os.path.join(run_dir, "train_endpoints.dat")
     if os.path.exists(endpoints_path):
-      run_endpoints = np.load(endpoints_path)
-      all_endpoints.append(run_endpoints)
+      file_size = os.path.getsize(endpoints_path)
+      num_endpoints = file_size // 54
+      run_endpoints = np.memmap(endpoints_path, dtype='uint8', mode='r', shape=(num_endpoints, 54))
+      all_endpoints_lists.append(np.array(run_endpoints))
     else:
-      print(f"Warning: 'endpoints.npy' not found in {run_dir}")
+      print(f"Warning: 'train_endpoints.dat' not found in {run_dir}")
 
-  if not all_endpoints:
-    raise FileNotFoundError("No endpoints found across selected run directories.")
+  if not all_endpoints_lists:
+    raise FileNotFoundError("No train_endpoints.dat found across selected run directories.")
 
-  # Concatenate arrays if multiple runs selected, then convert to python list
-  concatenated_endpoints = np.vstack(all_endpoints)
-  ENDPOINTS = concatenated_endpoints.tolist()
+  # Interleave endpoints across models
+  max_len = max(len(ep) for ep in all_endpoints_lists)
+  interleaved_endpoints = []
+  for idx in range(max_len):
+    for ep_list in all_endpoints_lists:
+      if idx < len(ep_list):
+        interleaved_endpoints.append(ep_list[idx])
+
+  ENDPOINTS = interleaved_endpoints
 
   ENDPOINT = 0
   neuralcube = Cube()

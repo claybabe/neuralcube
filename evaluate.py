@@ -35,18 +35,20 @@ if __name__ == "__main__":
     chosen_ckpt = sorted(best_ckpts)[-1] if best_ckpts else ckpts[0]
     model_paths.append(chosen_ckpt)
 
-    # 2. Load Endpoints (.npy)
-    endpoints_path = os.path.join(run_dir, "endpoints.npy")
+    # 2. Load Endpoints (.dat binary memmap produced by dataset.py)
+    endpoints_path = os.path.join(run_dir, "train_endpoints.dat")
     if os.path.exists(endpoints_path):
-      run_endpoints = np.load(endpoints_path)
-      all_endpoints.append(run_endpoints)
+      file_size = os.path.getsize(endpoints_path)
+      num_endpoints = file_size // 54
+      run_endpoints = np.memmap(endpoints_path, dtype='uint8', mode='r', shape=(num_endpoints, 54))
+      all_endpoints.append(np.array(run_endpoints))
     else:
-      print(f"Warning: 'endpoints.npy' not found in {run_dir}")
+      print(f"Warning: 'train_endpoints.dat' not found in {run_dir}")
 
   if not all_endpoints:
-    raise FileNotFoundError("No endpoints found across selected run directories.")
+    raise FileNotFoundError("No train_endpoints.dat found across selected run directories.")
 
-  # Concatenate arrays if multiple runs selected, deduplicate, and convert to list
+  # Concatenate arrays across selected runs, deduplicate, and convert to set
   concatenated_endpoints = np.vstack(all_endpoints)
   cases = set(tuple(ep) for ep in concatenated_endpoints)
   
