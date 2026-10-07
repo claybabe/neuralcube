@@ -461,7 +461,7 @@ if __name__ == "__main__":
         batch_size=train_batch_size,
         num_workers=4,
         num_classes=num_classes,
-        enable_online_rotations=False
+        enable_online_rotations=True
     )
     datamodule.setup()
 
