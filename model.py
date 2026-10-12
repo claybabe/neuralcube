@@ -21,6 +21,8 @@ class RubikDistancePredictor(LightningModule):
 
   def __init__(
       self,
+      input_dim=324,
+      feat_dim=6,
       hidden_dim=256,
       train_ds_size=23364033,
       batch_size=64,
@@ -85,7 +87,7 @@ class RubikDistancePredictor(LightningModule):
     )
 
     self.network = Sequential(
-      Linear(324, self.hparams.hidden_dim), ReLU(),
+      Linear(self.hparams.input_dim, self.hparams.hidden_dim), ReLU(),
       Linear(self.hparams.hidden_dim, self.hparams.hidden_dim // 2), ReLU(),
       Linear(self.hparams.hidden_dim // 2, self.hparams.num_classes) 
     )
@@ -110,11 +112,11 @@ class RubikDistancePredictor(LightningModule):
       selected_perms = self.rotation_perms
       num_rotations = 24
 
-    x_reshaped = x.view(batch_size, 54, 6)
+    x_reshaped = x.view(batch_size, 54, self.hparams.feat_dim)
     x_expanded = x_reshaped.unsqueeze(1).expand(-1, num_rotations, -1, -1)
-    idx = selected_perms.unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, 6)
+    idx = selected_perms.unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.hparams.feat_dim)
     x_aug = torch.gather(x_expanded, 2, idx)
-    return x_aug.reshape(-1, 324), num_rotations
+    return x_aug.reshape(-1, self.hparams.input_dim), num_rotations
 
   def _get_current_consistency_weight(self):
     current_epoch = self.global_step / self.steps_per_epoch
@@ -258,12 +260,14 @@ class RubikDistancePredictor(LightningModule):
     return val_loss
 
   def configure_optimizers(self):
-    optimizer = AdamW(self.parameters(), lr=1.0, weight_decay=1e-4)
+    # Initialize AdamW with genuine peak learning rate to fix decoupled weight decay scaling
+    optimizer = AdamW(self.parameters(), lr=self.hparams.peak_lr, weight_decay=1e-4)
 
     return {
       'optimizer': optimizer,
       'lr_scheduler': {
-        'scheduler': LambdaLR(optimizer, self.lr_schedule.get_value),
+        # Lambda outputs ratio in [0.0, 1.0] relative to peak_lr
+        'scheduler': LambdaLR(optimizer, lambda step: self.lr_schedule.get_value(step) / self.hparams.peak_lr),
         'interval': 'step',
         'name': 'lr_scheduler'
       }
@@ -456,7 +460,7 @@ if __name__ == "__main__":
 
     datamodule = RubikDataModule(
         data_dir=run_dir,
-        input_type="onehot",
+        input_type="bipolarhot",
         target_type="onehot",
         batch_size=train_batch_size,
         num_workers=4,
@@ -482,6 +486,8 @@ if __name__ == "__main__":
     )
 
     model = RubikDistancePredictor(
+        input_dim=datamodule.input_dim,
+        feat_dim=datamodule.feat_dim,
         hidden_dim=4096,
         train_ds_size=len(datamodule.train_ds),
         batch_size=datamodule.batch_size,

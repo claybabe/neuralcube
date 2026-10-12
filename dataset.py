@@ -622,7 +622,7 @@ class RubikMmapDataset(Dataset):
         if self.input_type == "onehot":
             self.lookup_map = np.eye(6, dtype=np.float32)
         elif self.input_type in ("bipolarhot", "bipolar"):
-            self.lookup_map = np.array(Cube.bipolar_map)
+            self.lookup_map = np.array(Cube.bipolar_map, dtype=np.float32)
         else:
             raise ValueError(f"Invalid input_type '{input_type}'. Expected 'onehot' or 'bipolarhot'.")
 
@@ -812,7 +812,7 @@ if __name__ == "__main__":
     # Step 3: Test Stratified DataModule & Batching
     dm = RubikDataModule(
         data_dir=DATASET_DIR,
-        input_type="onehot",
+        input_type="bipolarhot",
         target_type="onehot",
         batch_size=768,
         num_workers=4,
@@ -836,3 +836,6 @@ if __name__ == "__main__":
     print(f"\n\n{x}\n\n{y}")
     if dm.class_weights is not None:
         print(f"Class Weights Loaded (Shape {dm.class_weights.shape}):\n{dm.class_weights}...")
+    print(f"input dimension:{dm.input_dim}\nfeature dimension:{dm.feat_dim} ")
+    #delete the pieces so it exits without waiting for workers
+    del train_loader, val_loader, dm, builder, reader
