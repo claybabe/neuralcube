@@ -17,6 +17,54 @@ import os
 import math
 import json
 
+def fixed_log_softmax(z, dim=-1):
+  i_max = torch.argmax(z, dim=dim, keepdim=True)
+  z_max = torch.gather(z, dim, i_max)
+  is_max = F.one_hot(i_max.squeeze(dim), num_classes=z.size(dim)).bool()
+  if dim != -1 and dim != z.ndim - 1:
+    is_max = is_max.movedim(-1, dim)
+  zero = z.new_zeros(())
+  shifted = torch.where(is_max, zero, z - z_max)
+  exp_others = torch.where(is_max, zero, torch.exp(shifted))
+  s = torch.sum(exp_others, dim=dim, keepdim=True)
+  return shifted - torch.log1p(s)
+
+def fixed_softmax(z, dim=-1):
+  return torch.exp(fixed_log_softmax(z, dim=dim))
+
+def fixed_cross_entropy(z, t, weight=None):
+  z_t = torch.gather(z, -1, t.unsqueeze(-1))
+  is_t = F.one_hot(t, num_classes=z.size(-1)).bool()
+  zero = z.new_zeros(())
+  shifted = torch.where(is_t, zero, z - z_t)
+  b = torch.amax(shifted, dim=-1, keepdim=True)
+  s = torch.sum(torch.where(is_t, zero, torch.exp(shifted - b)), dim=-1)
+  b_sq = b.squeeze(-1)
+  loss = b_sq + torch.log1p(s + torch.expm1(-b_sq))
+  if weight is not None:
+    w = weight[t].to(loss.dtype)
+    return torch.sum(loss * w) / torch.sum(w)
+  return loss.mean()
+
+def fixed_kl_div(z_s, log_p, log_q=None):
+  if log_q is None:
+    log_q = fixed_log_softmax(z_s, dim=-1)
+  q = torch.exp(log_q)
+  p = torch.exp(log_p)
+  p = p / p.sum(dim=-1, keepdim=True)
+  delta = log_q - log_p
+  d = delta - torch.sum(p * delta, dim=-1, keepdim=True)
+  b = torch.amax(d, dim=-1, keepdim=True)
+  b_shift = torch.where(b > 10.0, b, torch.zeros_like(b))
+  kl = b_shift + torch.log1p(
+      torch.sum(p * torch.expm1(d - b_shift), dim=-1, keepdim=True).clamp(min=0.0)
+  )
+  s = d - kl
+  u = torch.where(torch.abs(s) < 1.0, p * torch.expm1(s.clamp(-1.0, 1.0)), q - p)
+  g = u - q * torch.sum(u, dim=-1, keepdim=True)
+  loss = kl.squeeze(-1).detach() + torch.sum(g.detach() * (z_s - z_s.detach()), dim=-1)
+  return loss.mean()
+
 class RubikDistancePredictor(LightningModule):
 
   def __init__(
@@ -169,17 +217,17 @@ class RubikDistancePredictor(LightningModule):
     with torch.no_grad():
       if not self.hparams.augment or c_weight == 0.0:
         x_pairs = self._compute_upper_gram(x)
-        logits = self.network(x_pairs).float()
-        return torch.softmax(logits, dim=-1)
+        logits = self.network(x_pairs)
+        return fixed_softmax(logits, dim=-1)
 
       all_avg_probs = []
       chunk_size = 128
       for i in range(0, x.size(0), chunk_size):
         x_chunk = x[i : i + chunk_size]
         x_all, _ = self._apply_rotations(x_chunk, k_sub=None) # Full 24 rotations
-        logits_all = self.network(x_all).float()
+        logits_all = self.network(x_all)
         logits_reshaped = logits_all.view(-1, 24, self.hparams.num_classes)
-        avg_probs = torch.softmax(logits_reshaped, dim=-1).mean(dim=1)
+        avg_probs = fixed_softmax(logits_reshaped, dim=-1).mean(dim=1)
         all_avg_probs.append(avg_probs)
       
       return torch.cat(all_avg_probs, dim=0)
@@ -197,39 +245,38 @@ class RubikDistancePredictor(LightningModule):
 
     if self.hparams.augment:
       k_sub = self.hparams.k_rotations
-      # Cast logits to float32 before softmax/log_softmax/kl_div to prevent fp16 overflow/underflow
-      logits_aug = self.forward(x, return_aug=True, k_sub=k_sub).float()  # (B, K, C)
-      log_probs = F.log_softmax(logits_aug, dim=-1)                       # (B, K, C)
+      logits_aug = self.forward(x, return_aug=True, k_sub=k_sub)          # (B, K, C)
+      log_probs = fixed_log_softmax(logits_aug, dim=-1)                   # (B, K, C)
 
       # 1. Supervision Loss
       y_expanded = y_labels.unsqueeze(1).expand(-1, k_sub).reshape(-1).long()
-      sup_loss = F.cross_entropy(
+      sup_loss = fixed_cross_entropy(
           logits_aug.view(-1, self.hparams.num_classes),
           y_expanded,
           weight=self.loss_weights,
       )
 
-      # 2. Compute Target Probabilities and Blended Target in float32
+      # 2. Compute Target Log-Probabilities and Blended Target in log space
       with torch.no_grad():
-        sub_centroid = torch.softmax(logits_aug, dim=-1).mean(dim=1).detach() # (B, C)
-        y_onehot = F.one_hot(y_labels, num_classes=self.hparams.num_classes).float() # (B, C)
-        
-        # Blend sub-centroid ensemble with ground truth target
-        blended_target = (1.0 - gamma) * sub_centroid + gamma * y_onehot
-        
-        # Clamp and re-normalize both targets so row sums equal 1.0 (guarantees KL >= 0)
-        sub_centroid = sub_centroid.clamp(min=1e-7)
-        sub_centroid = sub_centroid / sub_centroid.sum(dim=-1, keepdim=True)
-        blended_target = blended_target.clamp(min=1e-7)
-        blended_target = blended_target / blended_target.sum(dim=-1, keepdim=True)
+        b_max = log_probs.amax(dim=1, keepdim=True)
+        log_centroid = (
+            b_max + torch.log1p(torch.expm1(log_probs - b_max).mean(dim=1, keepdim=True))
+        ).squeeze(1)                                                      # (B, C)
+        is_t = F.one_hot(y_labels, num_classes=self.hparams.num_classes).bool()
+        log_blended = torch.where(
+            is_t,
+            torch.log1p((1.0 - gamma) * torch.expm1(log_centroid)),
+            log_centroid + math.log1p(-gamma),
+        )                                                                 # (B, C)
 
       # 3. Flatten tensors to (B * K, C) to ensure correct batchmean KL divergence scaling
+      logits_flat = logits_aug.view(-1, self.hparams.num_classes)
       log_probs_flat = log_probs.view(-1, self.hparams.num_classes)
-      centroid_flat = sub_centroid.unsqueeze(1).expand(-1, k_sub, -1).reshape(-1, self.hparams.num_classes)
-      blended_flat = blended_target.unsqueeze(1).expand(-1, k_sub, -1).reshape(-1, self.hparams.num_classes)
+      log_centroid_flat = log_centroid.unsqueeze(1).expand(-1, k_sub, -1).reshape(-1, self.hparams.num_classes)
+      log_blended_flat = log_blended.unsqueeze(1).expand(-1, k_sub, -1).reshape(-1, self.hparams.num_classes)
 
-      raw_consistency_loss = F.kl_div(log_probs_flat, centroid_flat, reduction='batchmean').clamp(min=0.0)
-      blended_consistency_loss = F.kl_div(log_probs_flat, blended_flat, reduction='batchmean').clamp(min=0.0)
+      raw_consistency_loss = fixed_kl_div(logits_flat, log_centroid_flat, log_q=log_probs_flat)
+      blended_consistency_loss = fixed_kl_div(logits_flat, log_blended_flat, log_q=log_probs_flat)
 
       # Record blended loss for EMA calculation
       self.consistency_schedule.record_losses(
@@ -258,8 +305,8 @@ class RubikDistancePredictor(LightningModule):
       self.log('params/gamma', gamma, on_step=True, prog_bar=False)
     else:
       x_pairs = self._compute_upper_gram(x)
-      logits = self.network(x_pairs).float()
-      loss = F.cross_entropy(logits, y_labels)
+      logits = self.network(x_pairs)
+      loss = fixed_cross_entropy(logits, y_labels)
 
     self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
     self.log('c_weight', c_weight, on_step=True, prog_bar=False)
@@ -275,9 +322,9 @@ class RubikDistancePredictor(LightningModule):
       y_long = torch.clamp(y.long(), 0, self.hparams.num_classes - 1)
       y_scalar = y.float()
     
-    probs = self.forward(x).float()
+    probs = self.forward(x)
     
-    val_loss = F.nll_loss(torch.log(probs.clamp(min=1e-9)), y_long)
+    val_loss = F.nll_loss(torch.log(probs.clamp(min=torch.finfo(probs.dtype).tiny)), y_long)
     
     preds = torch.argmax(probs, dim=-1)
     acc = (preds == y_long).float().mean()
@@ -481,7 +528,7 @@ if __name__ == "__main__":
       cycle_filter=2,
       num_select=16,
       max_shared_prefix=3,
-      shift_offsets=[0, 4, 8, 12, 16],
+      shift_offsets=list(range(20)),
       transform_indices=list(range(48)),
       off_path_penalty=0.1,
       branch_depth_k=2,
@@ -527,10 +574,10 @@ if __name__ == "__main__":
         hidden_dim=4096,
         train_ds_size=len(datamodule.train_ds),
         batch_size=datamodule.batch_size,
-        start_lr=3e-5,
-        peak_lr=1.2e-3,
+        start_lr=1e-5,
+        peak_lr=3.6e-4,
         end_lr=1e-6,
-        warmup_epochs=10,
+        warmup_epochs=1,
         warmup_power=0.5,
         decay_power=1.25,
         consistency_delay_epochs=0,
@@ -539,9 +586,9 @@ if __name__ == "__main__":
         target_ratio_pct=0.08,
         ema_epoch_fraction=0.3,
         k_rotations=8,
-        gamma_start=0.35,
+        gamma_start=0.2,
         gamma_end=0.10,
-        gamma_delay_epochs=30,
+        gamma_delay_epochs=10,
         gamma_ramp_end_epoch=120,
         augment=True,
         num_classes=num_classes,
