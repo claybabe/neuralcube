@@ -621,10 +621,10 @@ class RubikMmapDataset(Dataset):
         self.input_type = input_type
         if self.input_type == "onehot":
             self.lookup_map = np.eye(6, dtype=np.float32)
-        elif self.input_type in ("bipolarhot", "bipolar"):
-            self.lookup_map = np.array(Cube.bipolar_map, dtype=np.float32)
+        elif self.input_type == "orthoganal":
+            self.lookup_map = np.array(Cube.orthoganal_map, dtype=np.float32)
         else:
-            raise ValueError(f"Invalid input_type '{input_type}'. Expected 'onehot' or 'bipolarhot'.")
+            raise ValueError(f"Invalid input_type '{input_type}'. Expected 'onehot' or 'orthoganal'.")
 
         self.inputs = np.memmap(os.path.join(subset_dir, "inputs.dat"), dtype='uint8', mode='r', shape=(self.num_samples, 54))
         self.targets = np.memmap(os.path.join(subset_dir, "targets.dat"), dtype='float32', mode='r', shape=(self.num_samples,))
@@ -695,7 +695,7 @@ class RubikDataModule(LightningDataModule):
         self.enable_online_rotations = enable_online_rotations
         self.rotation_permutations = torch.tensor(Cube.rotations, dtype=torch.long)
 
-        self.feat_dim = 3 if self.input_type.lower() in ("bipolarhot", "bipolar") else 6
+        self.feat_dim = 3 if self.input_type == "orthoganal" else 6
         self.input_dim = 54 * self.feat_dim
 
         # Load metadata JSON for loss function class weights

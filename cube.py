@@ -148,7 +148,7 @@ class Cube():
   )
 
 
-  bipolar_map = (
+  orthoganal_map = (
       (1, 0, 0),    # 0: Up (White)
       (0, 1, 0),    # 1: Front (Red)
       (0, 0, 1),    # 2: Right (Blue)
@@ -189,11 +189,11 @@ class Cube():
     color_map = tuple([0]*9 + [1]*9 + [2]*9 + [3]*9 + [4]*9 + [5]*9)
     return [color_map[i] for i in self.state]
 
-  def toBipolarHot(self):
+  def toOrthoganal(self):
     subject = self.toColor()
     out = []
     for sticker in subject:
-      out += Cube.bipolar_map[sticker]
+      out += Cube.orthoganal_map[sticker]
     return out
 
   def toColorHot(self, L=1):
@@ -370,28 +370,28 @@ if __name__ == "__main__":
   assert tuple(action_transforms_48) == Cube.action_transforms, "Action Transforms incorrectly defined"
   print("--- Action Transforms correctly defined ---\n")
 
-  # 3. Bipolar Encoding Tests
-  print("--- Testing Bipolar Encodings ---")
+  # 3. orthoganal Encoding Tests
+  print("--- Testing Orthoganal Encodings ---")
   
   # A. Solved Cube Properties
   cube = Cube()
-  bipolar = cube.toBipolarHot()
+  orthoganal = cube.toOrthoganal()
   
-  assert len(bipolar) == 162, f"Expected bipolar length 162, got {len(bipolar)}"
-  assert sum(bipolar) == 0, f"Bipolar encoding is not zero-centered! Sum = {sum(bipolar)}"
+  assert len(orthoganal) == 162, f"Expected orthoganal length 162, got {len(orthoganal)}"
+  assert sum(orthoganal) == 0, f"Orthoganal encoding is not zero-centered! Sum = {sum(orthoganal)}"
   
   # B. Scrambled Cube Zero-Sum Invariant
   scramble = [0, 4, 2, 11, 15, 7, 8, 1, 14, 3]  # Arbitrary test scramble
   cube.algo(scramble)
-  scrambled_bipolar = cube.toBipolarHot()
-  assert sum(scrambled_bipolar) == 0, f"Scrambled bipolar sum broken! Sum = {sum(scrambled_bipolar)}"
+  scrambled_orthoganal = cube.toOrthoganal()
+  assert sum(scrambled_orthoganal) == 0, f"Scrambled orthoganal sum broken! Sum = {sum(scrambled_orthoganal)}"
   
   # C. Geometric Properties Verification via Class Map
   opposites = [(0, 3), (1, 4), (2, 5)]  # Up/Bottom, Front/Back, Right/Left
   
   # 1. Opposite Inverses Check
   for c1, c2 in opposites:
-    v1, v2 = Cube.bipolar_map[c1], Cube.bipolar_map[c2]
+    v1, v2 = Cube.orthoganal_map[c1], Cube.orthoganal_map[c2]
     inv_v1 = tuple(-x for x in v1)
     assert inv_v1 == v2, f"Opposite colors {c1} and {c2} are not inverse vectors!"
     dot_opp = sum(a * b for a, b in zip(v1, v2))
@@ -400,9 +400,9 @@ if __name__ == "__main__":
   # 2. Adjacent Equidistance Check
   adjacent_pairs = [(c1, c2) for c1 in range(6) for c2 in range(6) if c1 != c2 and (min(c1, c2), max(c1, c2)) not in opposites]
   for c1, c2 in adjacent_pairs:
-    dot_adj = sum(a * b for a, b in zip(Cube.bipolar_map[c1], Cube.bipolar_map[c2]))
+    dot_adj = sum(a * b for a, b in zip(Cube.orthoganal_map[c1], Cube.orthoganal_map[c2]))
     assert dot_adj == 0, f"Adjacent pair ({c1}, {c2}) has non-uniform dot product {dot_adj} (expected 0)"
 
-  print("All bipolar encoding tests passed.\n")
+  print("All orthoganal encoding tests passed.\n")
 
   print("\nAll tests complete successfully.")
