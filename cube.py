@@ -148,7 +148,7 @@ class Cube():
   )
 
 
-  orthoganal_map = (
+  orthoginal_map = (
       (1, 0, 0),    # 0: Up (White)
       (0, 1, 0),    # 1: Front (Red)
       (0, 0, 1),    # 2: Right (Blue)
@@ -189,11 +189,11 @@ class Cube():
     color_map = tuple([0]*9 + [1]*9 + [2]*9 + [3]*9 + [4]*9 + [5]*9)
     return [color_map[i] for i in self.state]
 
-  def toOrthoganal(self):
+  def toOrthoginal(self):
     subject = self.toColor()
     out = []
     for sticker in subject:
-      out += Cube.orthoganal_map[sticker]
+      out += Cube.orthoginal_map[sticker]
     return out
 
   def toColorHot(self, L=1):
@@ -370,28 +370,28 @@ if __name__ == "__main__":
   assert tuple(action_transforms_48) == Cube.action_transforms, "Action Transforms incorrectly defined"
   print("--- Action Transforms correctly defined ---\n")
 
-  # 3. orthoganal Encoding Tests
-  print("--- Testing Orthoganal Encodings ---")
+  # 3. orthoginal Encoding Tests
+  print("--- Testing Orthoginal Encodings ---")
   
   # A. Solved Cube Properties
   cube = Cube()
-  orthoganal = cube.toOrthoganal()
+  orthoginal = cube.toOrthoginal()
   
-  assert len(orthoganal) == 162, f"Expected orthoganal length 162, got {len(orthoganal)}"
-  assert sum(orthoganal) == 0, f"Orthoganal encoding is not zero-centered! Sum = {sum(orthoganal)}"
+  assert len(orthoginal) == 162, f"Expected orthoginal length 162, got {len(orthoginal)}"
+  assert sum(orthoginal) == 0, f"Orthoginal encoding is not zero-centered! Sum = {sum(orthoginal)}"
   
   # B. Scrambled Cube Zero-Sum Invariant
   scramble = [0, 4, 2, 11, 15, 7, 8, 1, 14, 3]  # Arbitrary test scramble
   cube.algo(scramble)
-  scrambled_orthoganal = cube.toOrthoganal()
-  assert sum(scrambled_orthoganal) == 0, f"Scrambled orthoganal sum broken! Sum = {sum(scrambled_orthoganal)}"
+  scrambled_orthoginal = cube.toOrthoginal()
+  assert sum(scrambled_orthoginal) == 0, f"Scrambled orthoginal sum broken! Sum = {sum(scrambled_orthoginal)}"
   
   # C. Geometric Properties Verification via Class Map
   opposites = [(0, 3), (1, 4), (2, 5)]  # Up/Bottom, Front/Back, Right/Left
   
   # 1. Opposite Inverses Check
   for c1, c2 in opposites:
-    v1, v2 = Cube.orthoganal_map[c1], Cube.orthoganal_map[c2]
+    v1, v2 = Cube.orthoginal_map[c1], Cube.orthoginal_map[c2]
     inv_v1 = tuple(-x for x in v1)
     assert inv_v1 == v2, f"Opposite colors {c1} and {c2} are not inverse vectors!"
     dot_opp = sum(a * b for a, b in zip(v1, v2))
@@ -400,9 +400,9 @@ if __name__ == "__main__":
   # 2. Adjacent Equidistance Check
   adjacent_pairs = [(c1, c2) for c1 in range(6) for c2 in range(6) if c1 != c2 and (min(c1, c2), max(c1, c2)) not in opposites]
   for c1, c2 in adjacent_pairs:
-    dot_adj = sum(a * b for a, b in zip(Cube.orthoganal_map[c1], Cube.orthoganal_map[c2]))
+    dot_adj = sum(a * b for a, b in zip(Cube.orthoginal_map[c1], Cube.orthoginal_map[c2]))
     assert dot_adj == 0, f"Adjacent pair ({c1}, {c2}) has non-uniform dot product {dot_adj} (expected 0)"
 
-  print("All orthoganal encoding tests passed.\n")
+  print("All orthoginal encoding tests passed.\n")
 
   print("\nAll tests complete successfully.")

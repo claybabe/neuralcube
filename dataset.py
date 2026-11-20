@@ -621,10 +621,10 @@ class RubikMmapDataset(Dataset):
         self.input_type = input_type
         if self.input_type == "onehot":
             self.lookup_map = np.eye(6, dtype=np.float32)
-        elif self.input_type == "orthoganal":
-            self.lookup_map = np.array(Cube.orthoganal_map, dtype=np.float32)
+        elif self.input_type == "orthoginal":
+            self.lookup_map = np.array(Cube.orthoginal_map, dtype=np.float32)
         else:
-            raise ValueError(f"Invalid input_type '{input_type}'. Expected 'onehot' or 'orthoganal'.")
+            raise ValueError(f"Invalid input_type '{input_type}'. Expected 'onehot' or 'orthoginal'.")
 
         self.inputs = np.memmap(os.path.join(subset_dir, "inputs.dat"), dtype='uint8', mode='r', shape=(self.num_samples, 54))
         self.targets = np.memmap(os.path.join(subset_dir, "targets.dat"), dtype='float32', mode='r', shape=(self.num_samples,))
@@ -695,7 +695,7 @@ class RubikDataModule(LightningDataModule):
         self.enable_online_rotations = enable_online_rotations
         self.rotation_permutations = torch.tensor(Cube.rotations, dtype=torch.long)
 
-        self.feat_dim = 3 if self.input_type == "orthoganal" else 6
+        self.feat_dim = 3 if self.input_type == "orthoginal" else 6
         self.input_dim = 54 * self.feat_dim
 
         # Load metadata JSON for loss function class weights
@@ -812,7 +812,7 @@ if __name__ == "__main__":
     # Step 3: Test Stratified DataModule & Batching
     dm = RubikDataModule(
         data_dir=DATASET_DIR,
-        input_type="bipolarhot",
+        input_type="onehot",
         target_type="onehot",
         batch_size=768,
         num_workers=4,
